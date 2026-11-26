@@ -27,6 +27,18 @@ class AiTest(unittest.TestCase):
         self.assertEqual(response["actions"][0], {"type": "route_n8n", "status": "done"})
         self.assertEqual(provider.call_args.args[0], HOOK_CFG["N8N_WEBHOOK_URL"])
 
+    def test_basic_auth_ingress_keeps_legacy_secret_header_out(self):
+        config = HOOK_CFG | {"N8N_WEBHOOK_AUTH": "basic"}
+        hook_answer = {"answer": "Ответ", "provider": "yandex"}
+        with patch.dict("os.environ", config, clear=True), patch(
+            "app.ai.post_json", return_value=hook_answer,
+        ) as provider:
+            response = reply("Монитор", [PRODUCT])
+        self.assertEqual(response["provider"], "yandex")
+        headers = provider.call_args.args[2]
+        self.assertEqual(set(headers), {"Authorization"})
+        self.assertTrue(headers["Authorization"].startswith("Basic "))
+
     def test_hook_catalog_tool_preserves_results_and_action(self):
         found = {**PRODUCT, "sku": "REAL-2", "currency": "RUB"}
         payload = {"answer": "Ответ", "provider": "yandex", "tool_status": "done", "products": [found]}

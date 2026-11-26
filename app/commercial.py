@@ -121,6 +121,12 @@ class Commercial:
                 SELECT 1 FROM demo_sessions WHERE owner = ? AND expires_at > ?
             """, (owner, datetime.now(timezone.utc).isoformat())).fetchone() is not None
 
+    def chat_history(self, owner):
+        with self.connection() as db:
+            return [dict(row) for row in db.execute("""
+                SELECT question, answer FROM session_turns WHERE owner = ? ORDER BY id
+            """, (owner,))]
+
     def record_turn(self, owner, question, answer):
         with self.connection() as db:
             db.execute("""

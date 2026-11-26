@@ -27,6 +27,18 @@ class ClientSessionsTests(unittest.TestCase):
         self.store.create_session("active", 60)
         self.assertTrue(self.store.active_session("active"))
 
+    def test_chat_history_retains_only_last_twelve_turns_in_own_session(self):
+        for index in range(14):
+            self.store.record_turn("first", f"Вопрос {index}", f"Ответ {index}")
+        self.store.record_turn("second", "Другой вопрос", "Другой ответ")
+        history = self.store.chat_history("first")
+        self.assertEqual(len(history), 12)
+        self.assertEqual(history[0]["question"], "Вопрос 2")
+        self.assertEqual(history[-1]["answer"], "Ответ 13")
+        self.assertEqual(self.store.chat_history("second"), [
+            {"question": "Другой вопрос", "answer": "Другой ответ"},
+        ])
+
     def test_history_includes_actual_turn_and_manager_reply(self):
         self.store.record_turn("first", "Вопрос", "Ответ помощника")
         lead = self.store.create_lead("test@example.invalid", "Монитор", owner="first")

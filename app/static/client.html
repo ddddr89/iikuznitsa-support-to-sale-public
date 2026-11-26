@@ -44,13 +44,33 @@
         </div>
       </div>
       <div id="conversation" class="conversation" role="log" aria-label="Диалог с помощником" hidden></div>
-      <form id="chat-form">
-        <label for="question">Что нужно подобрать?</label>
-        <textarea id="question" rows="4" maxlength="2000" required placeholder="Например, нужны ноутбуки для офиса"></textarea>
-        <button>Спросить помощника</button>
+      <form id="chat-form" class="composer">
+        <label for="question" class="visually-hidden">Сообщение помощнику</label>
+        <textarea id="question" rows="2" maxlength="2000" required placeholder="Напишите, что нужно подобрать"></textarea>
+        <div class="composer-actions">
+          <span class="meta">Ctrl или ⌘ + Enter</span>
+          <button aria-keyshortcuts="Control+Enter Meta+Enter">Спросить помощника</button>
+        </div>
       </form>
       <p id="chat-status" class="status" role="status"></p>
-      <button type="button" class="secondary" id="escalate" hidden>Позвать менеджера</button>
+      <button type="button" class="secondary" id="escalate" aria-controls="handoff" aria-expanded="false">Позвать менеджера</button>
+      <section class="request" id="handoff" aria-labelledby="request" hidden>
+        <div class="section-heading">
+          <h3 id="request" tabindex="-1">Оставить заявку</h3>
+          <button type="button" id="close-handoff" class="secondary">Свернуть</button>
+        </div>
+        <form id="lead-form">
+          <label for="contact">Электронная почта или телефон</label>
+          <input id="contact" maxlength="320" required>
+          <label for="sku">Артикул товара <span class="optional">(необязательно)</span></label>
+          <input id="sku" maxlength="200">
+          <label for="lead-message">Что нужно уточнить?</label>
+          <textarea id="lead-message" rows="3" maxlength="2000" required></textarea>
+          <button>Передать менеджеру</button>
+        </form>
+        <p id="lead-status" class="status" role="status"></p>
+        <button type="button" class="secondary" id="open-my-leads" hidden>Открыть мои заявки</button>
+      </section>
     </section>
     <section class="panel catalog-panel" aria-labelledby="catalog">
       <h2 id="catalog">Каталог товаров</h2>
@@ -59,7 +79,7 @@
         <label for="query">Название, категория или артикул</label>
         <div class="row"><input id="query" type="search" maxlength="200" placeholder="Поиск по каталогу"><button>Найти</button></div>
       </form>
-      <p id="search-status" class="status" role="status"></p>
+      <p id="search-status" class="status" role="status">Введите запрос для поиска. Подборки помощника тоже появятся здесь.</p>
       <div id="search-products" class="cards"></div>
       <nav class="row pagination" aria-label="Страницы каталога">
         <button type="button" id="previous" class="secondary" disabled>Назад</button>
@@ -67,19 +87,6 @@
       </nav>
     </section>
   </div>
-  <section class="panel request" aria-labelledby="request">
-    <h2 id="request">Оставить заявку</h2>
-    <form id="lead-form">
-      <label for="contact">Электронная почта или телефон</label>
-      <input id="contact" maxlength="320" required>
-      <label for="sku">Артикул товара <span class="optional">(необязательно)</span></label>
-      <input id="sku" maxlength="200">
-      <label for="lead-message">Что нужно уточнить?</label>
-      <textarea id="lead-message" rows="3" maxlength="2000" required></textarea>
-      <button>Передать менеджеру</button>
-    </form>
-    <p id="lead-status" class="status" role="status"></p>
-  </section>
   </div>
   <section id="my-leads" class="panel" role="tabpanel" aria-labelledby="leads-tab" hidden>
     <div class="section-heading">

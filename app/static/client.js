@@ -1,6 +1,6 @@
 import { byId, element, leadStatus, money, request, showHistory, status } from "./common.js";
 
-const pageSize = 10;
+const pageSize = 6;
 let query = "";
 let offset = 0;
 let escalation = false;
@@ -9,6 +9,8 @@ const history = [];
 let session;
 const conversation = byId("conversation");
 const question = byId("question");
+const catalogResults = byId("search-products");
+const restoredChat = restoreChat();
 for (const suggestion of document.querySelectorAll("[data-question]")) {
   suggestion.addEventListener("click", () => {
     question.value = suggestion.dataset.question;
@@ -24,6 +26,7 @@ const actionLabels = {
   model_yandex: "YandexGPT",
   model_openai: "GPT-5.4 mini",
   route_n8n: "Маршрут n8n",
+  lead_escalation: "Обращение передано менеджеру",
 };
 const resultLabels = {
   done: "выполнено",
@@ -78,6 +81,12 @@ function renderAnswer(result) {
   const products = element("div", undefined, "cards");
   showProducts(products, result.products);
   if (products.children.length) answer.append(products);
+  if (!query && !byId("search-form").querySelector("button").disabled) {
+    showProducts(catalogResults, result.products);
+    status("search-status", result.products.length
+      ? "Товары из последнего ответа помощника."
+      : "Помощник не предложил товары. Можно поискать по названию или артикулу.");
+  }
   conversation.scrollTop = answer.offsetTop - conversation.offsetTop;
 }
 
@@ -107,6 +116,7 @@ function showProducts(container, products) {
     select.type = "button";
     select.addEventListener("click", () => {
       byId("sku").value = product.sku;
+      openHandoff();
       byId("contact").focus();
     });
     row.append(select);
@@ -116,10 +126,18 @@ function showProducts(container, products) {
   container.replaceChildren(...cards);
 }
 
-async function search(nextQuery, nextOffset) {
+async function search(nextQuery, nextOffset, pageChange = false) {
   const previous = byId("previous");
   const next = byId("next");
   const button = byId("search-form").querySelector("button");
+  if (!nextQuery) {
+    query = "";
+    offset = 0;
+    catalogResults.replaceChildren();
+    previous.disabled = next.disabled = true;
+    status("search-status", "Введите запрос для поиска. Подборки помощника тоже появятся здесь.");
+    return;
+  }
   const previousDisabled = previous.disabled;
   const nextDisabled = next.disabled;
   previous.disabled = next.disabled = button.disabled = true;
@@ -127,12 +145,15 @@ async function search(nextQuery, nextOffset) {
   try {
     const params = new URLSearchParams({ q: nextQuery, limit: pageSize + 1, offset: nextOffset });
     const { items } = await request("/products?" + params);
-    showProducts(byId("search-products"), items.slice(0, pageSize));
+    showProducts(catalogResults, items.slice(0, pageSize));
     query = nextQuery;
     offset = nextOffset;
     previous.disabled = offset === 0;
     next.disabled = items.length <= pageSize;
-    status("search-status", items.length ? "" : "По этому запросу ничего не найдено.");
+    const count = Math.min(items.length, pageSize);
+    const range = count === 1 ? `Результат ${offset + 1}` : `Результаты ${offset + 1}–${offset + count}`;
+    status("search-status", count ? range : "По этому запросу ничего не найдено.");
+    if (pageChange) byId("search-form").scrollIntoView({ block: "nearest" });
   } catch (error) {
     previous.disabled = previousDisabled;
     next.disabled = nextDisabled;
@@ -146,8 +167,8 @@ byId("search-form").addEventListener("submit", (event) => {
   event.preventDefault();
   if (!event.currentTarget.querySelector("button").disabled) search(byId("query").value.trim(), 0);
 });
-byId("previous").addEventListener("click", () => search(query, offset - pageSize));
-byId("next").addEventListener("click", () => search(query, offset + pageSize));
+byId("previous").addEventListener("click", () => search(query, offset - pageSize, true));
+byId("next").addEventListener("click", () => search(query, offset + pageSize, true));
 
 function submit(id, statusId, pending, action) {
   byId(id).addEventListener("submit", async (event) => {
@@ -170,12 +191,20 @@ function submit(id, statusId, pending, action) {
 submit("chat-form", "chat-status", "Ожидаем ответ сервера…", async () => {
   const message = question.value.trim();
   if (!message) throw new Error("Опишите задачу.");
+  await restoredChat;
   await startSession();
-  addMessage(message, true);
+  const sent = addMessage(message, true);
   conversation.setAttribute("aria-busy", "true");
   let result;
   try {
     result = await request("/chat", { body: { message, history: history.slice(-4) } });
+  } catch (error) {
+    sent.remove();
+    if (!conversation.children.length) {
+      conversation.hidden = true;
+      byId("chat-welcome").hidden = false;
+    }
+    throw error;
   } finally {
     conversation.removeAttribute("aria-busy");
   }
@@ -184,15 +213,38 @@ submit("chat-form", "chat-status", "Ожидаем ответ сервера…"
   renderAnswer(result);
   lastQuestion = message;
   if (question.value.trim() === message) question.value = "";
-  byId("escalate").hidden = false;
   status("chat-status", "");
 });
 
+question.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.isComposing) {
+    event.preventDefault();
+    byId("chat-form").requestSubmit();
+  }
+});
+
+function openHandoff() {
+  byId("handoff").hidden = false;
+  byId("escalate").setAttribute("aria-expanded", "true");
+}
+
 byId("escalate").addEventListener("click", () => {
   escalation = true;
-  byId("lead-message").value ||= lastQuestion;
+  byId("lead-message").value ||= lastQuestion || question.value.trim();
   byId("request").textContent = "Передать вопрос менеджеру";
+  openHandoff();
   byId("contact").focus();
+});
+
+byId("close-handoff").addEventListener("click", () => {
+  byId("handoff").hidden = true;
+  byId("escalate").setAttribute("aria-expanded", "false");
+  byId("escalate").focus();
+});
+
+byId("open-my-leads").addEventListener("click", () => {
+  byId("leads-tab").click();
+  byId("leads-tab").focus();
 });
 
 submit("lead-form", "lead-status", "Передаём заявку…", async (form) => {
@@ -208,6 +260,7 @@ submit("lead-form", "lead-status", "Передаём заявку…", async (fo
   const result = lead.status === "escalated" ? " передана менеджеру на разбор." : " принята.";
   const duplicate = lead.duplicate ? " Используем ранее созданную заявку." : "";
   status("lead-status", "Заявка № " + lead.id + result + duplicate);
+  byId("open-my-leads").hidden = false;
 });
 
 async function loadCatalogSource() {
@@ -239,7 +292,20 @@ async function loadCatalogSource() {
 }
 
 loadCatalogSource();
-search("", 0);
+
+async function restoreChat() {
+  try {
+    const { items } = await request("/client/chat-history");
+    for (const item of items) {
+      addMessage(item.question, true);
+      addMessage(item.answer);
+    }
+    history.push(...items.slice(-4));
+    if (items.length) lastQuestion = items.at(-1).question;
+  } catch {
+    // A temporarily unavailable history should not block a new conversation.
+  }
+}
 
 function startSession() {
   session ??= request("/client/leads").finally(() => {
@@ -251,12 +317,15 @@ function startSession() {
 async function loadMyLeads() {
   const list = byId("my-lead-list");
   const refresh = byId("refresh-my-leads");
+  if (refresh.disabled) return;
+  const expanded = new Set([...list.querySelectorAll("details[open]")].map((card) => card.dataset.leadId));
   refresh.disabled = true;
   status("my-leads-status", "Загружаем заявки…");
   try {
     const { items } = await startSession();
     list.replaceChildren(...items.map((lead) => {
       const card = element("details", undefined, "card lead-detail");
+      card.dataset.leadId = lead.id;
       const summary = element("summary");
       summary.append(element("strong", lead.message), element("span", leadStatus(lead.status), "status-chip"));
       const content = element("div", undefined, "lead-content");
@@ -283,6 +352,7 @@ async function loadMyLeads() {
           content.replaceChildren(element("p", error.message, "status error"));
         }
       });
+      if (expanded.has(lead.id)) card.open = true;
       return card;
     }));
     status("my-leads-status", items.length ? "" : "В этой сессии ещё нет заявок.");

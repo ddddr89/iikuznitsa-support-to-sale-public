@@ -179,10 +179,25 @@ def create_app(db_path=None):
         actions = [{"type": "catalog_search", "status": "done"},
                    {"type": "knowledge_search", "status": "done"}]
         owner = session_owner(request)
+        model_unavailable = result["provider"] == "catalog" and any(
+            action["status"] == "error" and action["type"] in {"route_n8n", "model_yandex"}
+            for action in result["actions"]
+        )
+        if model_unavailable:
+            result["answer"] += "\n\nВопрос сохранён и передан менеджеру."
         if owner:
             commercial.record_turn(owner, body.message, result["answer"])
         if confirmed:
             actions.append({"type": "knowledge_confirmed", "status": "done"})
+        if model_unavailable:
+            lead = commercial.create_lead(
+                "Контакт не указан · обращение из чата", body.message,
+                escalation=True, owner=owner,
+            )
+            result["escalation"] = {"status": lead["status"]}
+            if owner:
+                result["escalation"]["id"] = lead["id"]
+            actions.append({"type": "lead_escalation", "status": "done"})
         return {
             "products": products,
             **result,
@@ -211,6 +226,11 @@ def create_app(db_path=None):
                                 httponly=True, samesite="strict", path="/")
             return {"items": []}
         return {"items": commercial.client_leads(owner)}
+
+    @api.get("/api/v1/client/chat-history")
+    def client_chat_history(request: Request):
+        owner = session_owner(request)
+        return {"items": commercial.chat_history(owner) if owner else []}
 
     @api.get("/api/v1/client/leads/{lead_id}")
     def client_lead(lead_id: str, owner: Annotated[str, Depends(require_session)]):

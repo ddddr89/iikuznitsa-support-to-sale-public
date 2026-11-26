@@ -102,6 +102,11 @@ function resetSelection() {
   knowledgeForm.reset();
   knowledgeForm.hidden = true;
   byId("lead-details").hidden = true;
+  byId("lead-history").replaceChildren();
+  leadUpdateForm.reset();
+  leadUpdateForm.hidden = true;
+  status("lead-update-status", "");
+  showSavedDocuments([]);
   items.replaceChildren();
   byId("selection").textContent = "Выберите заявку из списка.";
   clearQuote();
@@ -200,8 +205,27 @@ quoteForm.addEventListener("submit", async (event) => {
   }
 });
 
-async function downloadDocument(button, kind) {
-  const current = quote;
+function showSavedDocuments(documents) {
+  const section = byId("saved-documents");
+  const list = byId("saved-document-list");
+  section.hidden = documents.length === 0;
+  list.replaceChildren(...documents.map((document) => {
+    const row = element("div", undefined, "document-row");
+    row.append(element("span", money(document.total_minor, "RUB")));
+    const base = "/api/v1/manager/quotes/" + encodeURIComponent(document.id);
+    const savedQuote = { id: document.id, quote_pdf_url: base + "/quote.pdf", invoice_pdf_url: base + "/invoice.pdf" };
+    for (const [kind, label] of [["quote", "КП PDF"], ["invoice", "Проект счёта PDF"]]) {
+      const button = element("button", label, "secondary");
+      button.type = "button";
+      button.addEventListener("click", () => downloadDocument(button, kind, savedQuote));
+      row.append(button);
+    }
+    return row;
+  }));
+}
+
+async function downloadDocument(button, kind, current = quote) {
+  const currentSelection = selected;
   const currentSession = session;
   if (!current || button.disabled) return;
   const address = kind === "invoice" ? current.invoice_pdf_url : current.quote_pdf_url || current.download_url;
@@ -216,7 +240,7 @@ async function downloadDocument(button, kind) {
       throw new Error("Ссылка на документ некорректна.");
     }
     const file = await request(path.pathname.slice("/api/v1".length) + path.search, { token, download: true });
-    if (currentSession !== session || quote !== current) return;
+    if (currentSession !== session || selected !== currentSelection) return;
     const url = URL.createObjectURL(file);
     const link = element("a");
     link.href = url;
@@ -227,7 +251,7 @@ async function downloadDocument(button, kind) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     status("download-status", "Скачивание началось.");
   } catch (error) {
-    if (currentSession === session && quote === current) status("download-status", error.message, true);
+    if (currentSession === session && selected === currentSelection) status("download-status", error.message, true);
   } finally {
     button.disabled = false;
   }
@@ -268,11 +292,13 @@ async function loadLeadDetail(lead) {
   leadUpdateForm.hidden = true;
   leadUpdateForm.reset();
   byId("lead-history").replaceChildren();
+  showSavedDocuments([]);
   status("lead-update-status", "Загружаем историю…");
   try {
     const detail = await request("/manager/leads/" + encodeURIComponent(lead.id), { token });
     if (currentSession !== session || selected !== lead) return;
     showHistory(byId("lead-history"), detail);
+    showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
     leadUpdateForm.hidden = false;
     status("lead-update-status", "");
@@ -296,6 +322,7 @@ leadUpdateForm.addEventListener("submit", async (event) => {
     });
     if (currentSession !== session || selected !== lead) return;
     showHistory(byId("lead-history"), detail);
+    showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
     byId("manager-reply").value = "";
     status("lead-update-status", "Изменения сохранены.");

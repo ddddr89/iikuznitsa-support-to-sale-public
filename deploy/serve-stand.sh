@@ -17,6 +17,10 @@ if [[ -r "$stand/n8n-webhook-url" && -r "$stand/n8n-webhook-secret" ]]; then
     export N8N_WEBHOOK_URL N8N_WEBHOOK_SECRET
     read -r N8N_WEBHOOK_URL < "$stand/n8n-webhook-url"
     read -r N8N_WEBHOOK_SECRET < "$stand/n8n-webhook-secret"
+    if [[ -r "$stand/n8n-webhook-auth" ]]; then
+        export N8N_WEBHOOK_AUTH
+        read -r N8N_WEBHOOK_AUTH < "$stand/n8n-webhook-auth"
+    fi
 fi
 export APP_DB_PATH="$stand/catalog.sqlite3"
 export APP_KNOWLEDGE_DB="$stand/knowledge.sqlite3"

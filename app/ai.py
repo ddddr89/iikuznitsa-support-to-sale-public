@@ -1,5 +1,6 @@
 """Catalog-grounded model routing for the FastAPI chat route."""
 
+import base64
 import json
 import os
 import sqlite3
@@ -177,6 +178,13 @@ def _send_yandex(key, folder, message, products, actions,
     )
 
 
+def webhook_headers(secret):
+    if os.getenv("N8N_WEBHOOK_AUTH") == "basic":
+        encoded = base64.b64encode(f"iikuznitsa-app:{secret}".encode()).decode()
+        return {"Authorization": f"Basic {encoded}"}
+    return {"X-Webhook-Secret": secret}
+
+
 def reply(message: str, products: list[dict], *, search: Search | None = None,
           knowledge=(), history=()) -> dict:
     actions = []
@@ -187,7 +195,7 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
         try:
             result = post_json(
                 url, {"message": message, "products": _cards(products), "knowledge": knowledge, "history": history},
-                {"X-Webhook-Secret": secret}, timeout=27,
+                webhook_headers(secret), timeout=27,
             )
             provider = result.get("provider")
             answer = _answer(result.get("answer"))
