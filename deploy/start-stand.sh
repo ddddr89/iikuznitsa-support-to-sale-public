@@ -6,7 +6,7 @@ stand="$PWD/.stand"
 mkdir -p "$stand"
 socket="$stand/tmux.sock"
 port=${SUPPORT_HTTPS_PORT:-18443}
-if tmux -S "$socket" has-session -t support-to-sale 2>/dev/null; then
+if tmux -S "$socket" has-session -t =support-to-sale 2>/dev/null; then
     echo 'HTTPS-стенд уже запущен.'
     exit 0
 fi
@@ -29,7 +29,7 @@ if [[ ${SUPPORT_STAND_PROBE:-1} == 1 ]]; then
             printf '\nHTTPS-стенд доступен на https://localhost:%s\n' "$port"
             exit 0
         fi
-        tmux -S "$socket" has-session -t support-to-sale 2>/dev/null || break
+        tmux -S "$socket" has-session -t =support-to-sale 2>/dev/null || break
         sleep .2
     done
     echo 'Проверка HTTPS не прошла. Диагностика в .stand/server.log.' >&2

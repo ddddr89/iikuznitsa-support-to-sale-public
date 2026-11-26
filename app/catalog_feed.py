@@ -1,6 +1,8 @@
 """Update the catalog from a supplied HTTPS or local YML storefront export."""
 
 import argparse
+from contextlib import contextmanager
+import gzip
 import os
 from http.client import HTTPException
 from pathlib import Path
@@ -16,6 +18,17 @@ from app.catalog import Catalog
 
 
 MAX_BYTES = 512 * 1024 * 1024
+
+
+@contextmanager
+def open_feed(path):
+    """Detect gzip by its signature because catalog export suffixes vary."""
+    with path.open("rb") as raw:
+        if raw.peek(2).startswith(b"\x1f\x8b"):
+            with gzip.GzipFile(fileobj=raw) as stream:
+                yield stream
+        else:
+            yield raw
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -83,6 +96,7 @@ def rows(file):
             description = "".join(description_node.itertext()) if description_node is not None else ""
             yield position, {
                 "sku": node.get("id", ""),
+                "vendor_code": node.findtext("vendorCode") or "",
                 "name": name,
                 "category": categories.get(node.findtext("categoryId"), ""),
                 "description": description,
@@ -110,11 +124,11 @@ def main():
             if path is None:
                 path = Path(temporary) / "feed.xml"
                 download(url, path)
-            with path.open("rb") as file:
+            with open_feed(path) as file:
                 count = Catalog(args.database).replace_snapshot(
                     rows(file), source="softline_feed", expected_count=args.expected_count,
                 )
-    except (OSError, ValueError, ParseError, sqlite3.Error) as error:
+    except (EOFError, OSError, ValueError, ParseError, sqlite3.Error) as error:
         parser.exit(1, f"Ошибка обновления каталога: {error}\n")
     print(f"Каталог Softline обновлён. Загружено SKU: {count}")
 

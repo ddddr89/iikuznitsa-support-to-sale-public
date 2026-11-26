@@ -5,11 +5,13 @@ let query = "";
 let offset = 0;
 let escalation = false;
 let lastQuestion = "";
+const history = [];
 const conversation = byId("conversation");
 const question = byId("question");
 
 const actionLabels = {
   catalog_search: "Поиск в каталоге",
+  knowledge_search: "Поиск в базе знаний",
   tool_catalog_search: "Дополнительный поиск",
   model_yandex: "YandexGPT",
   model_openai: "GPT-5.4 mini",
@@ -49,6 +51,21 @@ function renderAnswer(result) {
   }
   const trace = renderActions(result.actions);
   if (trace.children.length) answer.append(trace);
+  for (const source of result.sources ?? []) {
+    try {
+      const url = new URL(source.url);
+      if (url.protocol !== "https:") continue;
+      const summary = element("p", undefined, "meta");
+      const link = element("a", source.title);
+      link.href = url.href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      summary.append(link);
+      answer.append(summary);
+    } catch {
+      // Ignore invalid source URLs.
+    }
+  }
   const products = element("div", undefined, "cards");
   showProducts(products, result.products);
   if (products.children.length) answer.append(products);
@@ -145,7 +162,9 @@ submit("chat-form", "chat-status", "Ожидаем ответ сервера…"
   const message = question.value.trim();
   if (!message) throw new Error("Опишите задачу.");
   addMessage(message, true);
-  const result = await request("/chat", { body: { message } });
+  const result = await request("/chat", { body: { message, history: history.slice(-4) } });
+  history.push({ question: message, answer: result.answer });
+  if (history.length > 4) history.shift();
   renderAnswer(result);
   lastQuestion = message;
   if (question.value.trim() === message) question.value = "";

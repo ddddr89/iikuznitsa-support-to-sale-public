@@ -1,7 +1,10 @@
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import compare_digest
+from threading import Lock
+from time import monotonic
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -14,6 +17,7 @@ from app.ai import reply
 from app.catalog import Catalog
 from app.commercial import Commercial
 from app.documents import render_pdf
+from app.knowledge import Knowledge
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Contact = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)]
@@ -25,11 +29,18 @@ class Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Turn(Input):
+    question: Text
+    answer: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+
+
 class Chat(Input):
     message: Text
+    history: Annotated[list[Turn], Field(max_length=4)] = Field(default_factory=list)
 
 
-class Lead(Chat):
+class Lead(Input):
+    message: Text
     contact: Contact
     sku: Sku | None = None
     escalation: bool = False
@@ -59,11 +70,16 @@ def create_app(db_path=None):
     path = db_path or os.getenv("APP_DB_PATH", "support.sqlite3")
     catalog = Catalog(path)
     commercial = Commercial(path)
+    knowledge = Knowledge(os.getenv("APP_KNOWLEDGE_DB") or path)
+    chat_max = int(os.getenv("APP_CHAT_PER_MINUTE", "0"))
+    chat_times = deque()
+    chat_lock = Lock()
 
     @asynccontextmanager
     async def lifespan(_app):
         catalog.init()
         commercial.init()
+        knowledge.init()
         yield
 
     api = FastAPI(title="Support-to-Sale AI", lifespan=lifespan)
@@ -92,12 +108,30 @@ def create_app(db_path=None):
 
     @api.post("/api/v1/chat")
     def chat(body: Chat):
+        if chat_max > 0:
+            with chat_lock:
+                now = monotonic()
+                while chat_times and chat_times[0] <= now - 60:
+                    chat_times.popleft()
+                if len(chat_times) >= chat_max:
+                    raise HTTPException(429, "Лимит запросов к помощнику", {"Retry-After": "60"})
+                chat_times.append(now)
         products = catalog.search(body.message, 5)
-        result = reply(body.message, products, search=catalog.search)
+        if not products and body.history:
+            products = catalog.search(body.history[-1].question, 5)
+        resources = knowledge.search(body.message)
+        result = reply(
+            body.message, products, search=catalog.search, knowledge=resources,
+            history=[item.model_dump() for item in body.history],
+        )
+        actions = [{"type": "catalog_search", "status": "done"},
+                   {"type": "knowledge_search", "status": "done"}]
         return {
             "products": products,
             **result,
-            "actions": [{"type": "catalog_search", "status": "done"}, *result["actions"]],
+            "actions": [*actions, *result["actions"]],
+            "sources": [{"title": item["title"], "url": item["url"]}
+                        for item in resources if item.get("url")],
         }
 
     @api.post("/api/v1/leads", status_code=201)

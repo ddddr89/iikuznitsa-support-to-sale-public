@@ -15,7 +15,8 @@ MAX_PRICE_MINOR = (2**53 - 1) // (50 * 999)
 QUERY_STOP_WORDS = {
     "а", "в", "для", "до", "есть", "и", "из", "или", "как", "какие", "какой",
     "мне", "на", "найди", "нужен", "нужна", "нужны", "о", "от", "по", "подбери",
-    "покажи", "при", "с", "у", "что", "это", "подберите", "покажите", "пожалуйста",
+    "for", "the", "with", "покажи", "при", "с", "у", "что", "это", "подберите", "покажите", "пожалуйста",
+    "sku", "артикул", "артикулу", "артикулом", "позицию",
 }
 
 SCHEMA = """
@@ -35,6 +36,11 @@ CREATE TABLE IF NOT EXISTS catalog_products (
     currency TEXT NOT NULL CHECK (currency = 'RUB')
 );
 CREATE INDEX IF NOT EXISTS catalog_sku_nocase ON catalog_products (sku COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS catalog_vendor_codes (
+    code TEXT NOT NULL COLLATE NOCASE,
+    sku TEXT NOT NULL REFERENCES catalog_products (sku),
+    PRIMARY KEY (code, sku)
+) WITHOUT ROWID;
 CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search USING fts5(
     sku, name, category, description, content='catalog_products',
     tokenize='unicode61'
@@ -63,6 +69,7 @@ class Catalog:
     def search(self, q: str, limit: int = 20, offset: int = 0) -> list[dict]:
         q = q.strip()
         with self._connect() as connection:
+            connection.execute("BEGIN")
             if not q:
                 rows = connection.execute(
                     "SELECT * FROM catalog_products ORDER BY sku LIMIT ? OFFSET ?",
@@ -78,6 +85,10 @@ class Catalog:
             if exact is not None:
                 return [] if offset else [dict(exact)]
 
+            aliases = self._vendor_matches(connection, q, limit, offset)
+            if aliases is not None:
+                return aliases
+
             tokens = list(dict.fromkeys(re.findall(r"[^\W_]+", q.lower())))[:32]
             if not tokens:
                 return []
@@ -85,7 +96,21 @@ class Catalog:
             tokens = terms or tokens
             meaningful = [token for token in tokens if not token.isdecimal()]
             tokens = meaningful or tokens
-            query = " OR ".join(f'"{token}"*' for token in tokens)
+            for token in tokens:
+                if re.fullmatch(r"[a-z][a-z0-9]*[0-9][a-z0-9]*", token):
+                    aliases = self._vendor_matches(connection, token, limit, offset)
+                    if aliases is not None:
+                        return aliases
+            alternatives = " OR ".join(f'"{token}"*' for token in tokens)
+            anchor = next((token for token in tokens if re.fullmatch(r"[a-z]{3,}", token)), None)
+            query = alternatives
+            if anchor and len(tokens) > 1:
+                anchor_query = f'"{anchor}"*'
+                if connection.execute(
+                    "SELECT 1 FROM catalog_search WHERE catalog_search MATCH ? LIMIT 1",
+                    (anchor_query,),
+                ).fetchone():
+                    query = f"{anchor_query} AND ({alternatives})"
             rows = connection.execute(
                 """
                 SELECT products.*
@@ -98,6 +123,24 @@ class Catalog:
                 (query, limit, offset),
             )
             return [dict(row) for row in rows]
+
+    def _vendor_matches(self, connection, code, limit, offset):
+        if not connection.execute(
+            "SELECT 1 FROM catalog_vendor_codes WHERE code = ? LIMIT 1", (code,),
+        ).fetchone():
+            return None
+        matches = connection.execute(
+            """
+            SELECT p.*
+            FROM catalog_vendor_codes AS v
+            JOIN catalog_products AS p ON p.sku = v.sku
+            WHERE v.code = ?
+            ORDER BY p.price_minor IS NULL, p.sku
+            LIMIT ? OFFSET ?
+            """,
+            (code, limit, offset),
+        )
+        return [dict(match) for match in matches]
 
     def get(self, sku: str) -> dict | None:
         return self.get_many([sku]).get(sku)
@@ -137,6 +180,7 @@ class Catalog:
         self.init()
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            connection.execute("DELETE FROM catalog_vendor_codes")
             connection.execute("DELETE FROM catalog_products")
             count = 0
             for position, row in rows:
@@ -145,6 +189,12 @@ class Catalog:
                         "INSERT INTO catalog_products VALUES (?, ?, ?, ?, ?, ?, ?)",
                         _parse_row(row),
                     )
+                    code = row.get("vendor_code", "").strip()
+                    if code:
+                        connection.execute(
+                            "INSERT INTO catalog_vendor_codes VALUES (?, ?)",
+                            (code, row["sku"].strip()),
+                        )
                 except (ValueError, sqlite3.IntegrityError) as error:
                     raise ValueError(f"{position}: неверные данные или повтор SKU") from error
                 count += 1
