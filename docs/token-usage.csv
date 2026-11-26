@@ -5,3 +5,5 @@ knowledge_delivery,1,yandexgpt-5.1,713,0,33,746
 consultation_1,1,yandexgpt-5.1,929,192,106,1035
 consultation_2,1,yandexgpt-5.1,876,192,106,982
 n8n_sku_lookup,1,yandexgpt-5.1,225,,12,237
+n8n_delivery_responses,1,yandexgpt-5.1,235,0,23,258
+n8n_catalog_responses_final_only,2,yandexgpt-5.1,322,0,51,373
