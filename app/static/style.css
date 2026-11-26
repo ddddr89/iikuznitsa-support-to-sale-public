@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light;
+  font: 16px/1.5 Inter, system-ui, sans-serif;
+  color: #172d3c;
+  background: #f1f5f8;
+  --ink: #172d3c;
+  --muted: #4b6474;
+  --accent: #006b61;
+  --edge: #d7e2e8;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; }
+header { background: #142d3b; color: white; }
+.shell { width: min(1120px, calc(100% - 2rem)); margin-inline: auto; }
+.nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 4rem; }
+.nav a { color: #edf6f8; }
+.brand { font-size: 1.22rem; font-weight: 750; text-decoration: none; }
+.brand span { color: #7ee2cc; }
+.intro { padding: 3rem 0 2rem; }
+h1 { font-size: clamp(2.25rem, 6vw, 4rem); letter-spacing: -.06em; line-height: 1.05; margin: 0; }
+h2 { font-size: 1.35rem; margin: 0 0 1rem; letter-spacing: -.02em; }
+p { margin: .5rem 0; overflow-wrap: anywhere; }
+.intro p, .optional, .meta { color: var(--muted); }
+main { padding-bottom: 3rem; }
+.columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 1rem; }
+.panel { padding: clamp(1rem, 3vw, 2rem); background: #fff; border: 1px solid var(--edge); border-radius: 1rem; box-shadow: 0 4px 18px #182e3910; }
+.panel + .columns, .request { margin-top: 1rem; }
+.request { max-width: 680px; scroll-margin-top: 1rem; }
+label { display: block; font-weight: 650; font-size: .9rem; margin-bottom: .3rem; }
+label:not(:first-child) { margin-top: .75rem; }
+input, textarea, button { font: inherit; }
+input, textarea { display: block; width: 100%; min-width: 0; padding: .62rem .8rem; color: var(--ink); border: 1px solid #a7bbc8; border-radius: .5rem; background: #fdfefe; }
+textarea { resize: vertical; }
+button { border: 1px solid transparent; cursor: pointer; color: #fff; background: var(--accent); padding: .64rem .95rem; border-radius: .5rem; font-weight: 650; }
+button:disabled { opacity: .55; cursor: default; }
+button.secondary { color: var(--accent); background: #e9f5f2; border-color: #b8dbd2; }
+textarea + button, .actions, #download { margin-top: .85rem; }
+:focus-visible { outline: 3px solid #008d7f; outline-offset: 3px; }
+.row, .actions { display: flex; gap: .5rem; align-items: center; }
+.row > button { flex-shrink: 0; }
+.pagination { margin-top: 1rem; }
+.status { color: var(--muted); white-space: pre-wrap; }
+.status:empty { display: none; }
+.status.error { color: #a12631; }
+.cards { display: grid; gap: .65rem; }
+.status:not(:empty) + .cards, #quote-items { margin-top: .8rem; }
+.card { padding: .85rem; border: 1px solid var(--edge); border-radius: .65rem; overflow-wrap: anywhere; }
+.card h3 { font-size: 1rem; margin: 0; }
+.card .row, .actions { flex-wrap: wrap; }
+.card .row { margin-top: .65rem; justify-content: space-between; }
+.card a { color: var(--accent); }
+.meta { font-size: .86rem; }
+.quote-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.5rem, 7rem) auto; gap: .5rem; align-items: end; }
+.quote-item label { margin: 0; }
+@media (max-width: 760px) { .columns { grid-template-columns: 1fr; } }
+@media (max-width: 430px) { .nav { align-items: flex-start; flex-direction: column; padding-block: .65rem; } .row { flex-wrap: wrap; } }
+
+.roles { display: flex; gap: .2rem; padding: .2rem; border-radius: .75rem; background: #ffffff16; }
+.roles a { padding: .35rem .7rem; border-radius: .55rem; text-decoration: none; font-size: .9rem; }
+.roles [aria-current="page"] { color: #142d3b; background: #edf6f8; font-weight: 700; }
+.conversation { position: relative; display: grid; gap: .75rem; margin-bottom: 1rem; max-height: 46vh; overflow: auto; }
+.message { padding: .75rem; border-radius: .75rem; background: #f1f5f8; }
+.message.customer { background: #e9f5f2; margin-left: 1.25rem; }
+.message p { white-space: pre-wrap; }
+.message .cards { margin-top: .65rem; }
+.trace { display: flex; flex-wrap: wrap; gap: .4rem; padding: 0; list-style: none; }
+.trace li { border: 1px solid var(--edge); border-radius: 1rem; padding: .25rem .55rem; color: var(--muted); font-size: .8rem; }
+.trace li[data-state="failed"], .trace li[data-state="error"] { color: #a12631; border-color: #e7bcc2; }
+#downloads button { margin-top: 0; }
+#escalate { margin-top: .5rem; }

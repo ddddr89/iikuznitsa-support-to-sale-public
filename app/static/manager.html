@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кабинет менеджера · Support-to-Sale</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/manager.js"></script>
+</head>
+<body>
+<header>
+  <div class="shell nav">
+    <a class="brand" href="/">Support<span>–</span>to<span>–</span>Sale</a>
+    <nav class="roles" aria-label="Переключение роли">
+      <a href="/">Клиент</a>
+      <a href="/manager" aria-current="page">Менеджер</a>
+    </nav>
+  </div>
+</header>
+<main class="shell">
+  <div class="intro"><h1>Кабинет менеджера</h1><p>Откройте заявку клиента и подготовьте документы.</p></div>
+  <section class="panel" aria-labelledby="access">
+    <h2 id="access">Доступ к заявкам</h2>
+    <form id="access-form">
+      <label for="token">Токен менеджера</label>
+      <div class="row"><input id="token" type="password" autocomplete="off" required><button>Войти</button></div>
+    </form>
+    <div class="row" id="manager-session" hidden>
+      <button type="button" class="secondary" id="refresh">Обновить заявки</button>
+      <button type="button" class="secondary" id="sign-out">Выйти</button>
+    </div>
+    <p id="access-status" class="status" role="status"></p>
+  </section>
+  <div class="columns" id="workspace" hidden>
+    <section class="panel" aria-labelledby="leads">
+      <h2 id="leads">Входящие заявки</h2>
+      <div id="lead-list" class="cards"></div>
+    </section>
+    <section class="panel" aria-labelledby="quote">
+      <h2 id="quote">Коммерческое предложение</h2>
+      <p id="selection">Выберите заявку из списка.</p>
+      <form id="quote-form" hidden>
+        <div id="quote-items" class="cards"></div>
+        <div class="actions">
+          <button id="add-item" class="secondary" type="button">Добавить позицию</button>
+          <button>Сформировать КП</button>
+        </div>
+      </form>
+      <p id="quote-status" class="status" role="status"></p>
+      <div id="downloads" class="actions" hidden>
+        <button type="button" id="download" hidden>Скачать КП</button>
+        <button type="button" id="download-invoice" class="secondary" hidden>Скачать черновик счёта PDF</button>
+      </div>
+      <p id="download-status" class="status" role="status"></p>
+    </section>
+  </div>
+</main>
+</body>
+</html>
