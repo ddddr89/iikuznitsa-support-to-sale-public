@@ -27,6 +27,14 @@ class AiTest(unittest.TestCase):
         self.assertEqual(response["actions"][0], {"type": "route_n8n", "status": "done"})
         self.assertEqual(provider.call_args.args[0], HOOK_CFG["N8N_WEBHOOK_URL"])
 
+    def test_hook_catalog_tool_preserves_results_and_action(self):
+        found = {**PRODUCT, "sku": "REAL-2", "currency": "RUB"}
+        payload = {"answer": "Ответ", "provider": "yandex", "tool_status": "done", "products": [found]}
+        with patch.dict("os.environ", HOOK_CFG, clear=True), patch("app.ai.post_json", return_value=payload):
+            response = reply("Монитор", [PRODUCT])
+        self.assertEqual(response["products"], [found, PRODUCT])
+        self.assertIn({"type": "tool_catalog_search", "status": "done"}, response["actions"])
+
     def test_hook_error_falls_back_to_direct_yandex(self):
         with patch.dict("os.environ", Y_CFG | HOOK_CFG, clear=True), patch(
             "app.ai.post_json", side_effect=[URLError("unavailable"), ANSWER],

@@ -187,17 +187,30 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
         try:
             result = post_json(
                 url, {"message": message, "products": _cards(products), "knowledge": knowledge, "history": history},
-                {"X-Webhook-Secret": secret}, timeout=18,
+                {"X-Webhook-Secret": secret}, timeout=27,
             )
             provider = result.get("provider")
             answer = _answer(result.get("answer"))
             if provider not in ("yandex", "openai"):
                 raise ValueError("Invalid webhook provider")
-            actions.extend([
-                {"type": "route_n8n", "status": "done"},
-                {"type": f"model_{provider}", "status": "done"},
-            ])
-            return {"answer": answer, "provider": provider, "actions": actions}
+            actions.append({"type": "route_n8n", "status": "done"})
+            tool_status = result.get("tool_status")
+            if tool_status in ("done", "error"):
+                actions.append({"type": "tool_catalog_search", "status": tool_status})
+            actions.append({"type": f"model_{provider}", "status": "done"})
+            response = {"answer": answer, "provider": provider, "actions": actions}
+            found = result.get("products")
+            if tool_status == "done" and isinstance(found, list):
+                selected = {
+                    item["sku"]: item for item in found[:5]
+                    if isinstance(item, dict) and isinstance(item.get("sku"), str)
+                    and isinstance(item.get("name"), str) and isinstance(item.get("currency"), str)
+                    and "price_minor" in item
+                }
+                for item in products:
+                    selected.setdefault(item["sku"], item)
+                response["products"] = list(selected.values())[:5]
+            return response
         except PROVIDER_ERRORS:
             actions.append({"type": "route_n8n", "status": "error"})
 

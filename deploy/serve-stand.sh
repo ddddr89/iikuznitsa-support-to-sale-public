@@ -13,6 +13,11 @@ if [[ -r "$secrets" ]]; then
 fi
 export MANAGER_TOKEN
 read -r MANAGER_TOKEN < "$stand/manager-token"
+if [[ -r "$stand/n8n-webhook-url" && -r "$stand/n8n-webhook-secret" ]]; then
+    export N8N_WEBHOOK_URL N8N_WEBHOOK_SECRET
+    read -r N8N_WEBHOOK_URL < "$stand/n8n-webhook-url"
+    read -r N8N_WEBHOOK_SECRET < "$stand/n8n-webhook-secret"
+fi
 export APP_DB_PATH="$stand/catalog.sqlite3"
 export APP_KNOWLEDGE_DB="$stand/knowledge.sqlite3"
 export APP_CHAT_PER_MINUTE="${APP_CHAT_PER_MINUTE:-30}"
