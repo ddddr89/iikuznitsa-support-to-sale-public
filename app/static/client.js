@@ -3,6 +3,7 @@ import { byId, element, leadStatus, money, request, showHistory, status } from "
 const pageSize = 6;
 let query = "";
 let offset = 0;
+let catalogIntent = 0;
 let escalation = false;
 let lastQuestion = "";
 const history = [];
@@ -18,21 +19,6 @@ for (const suggestion of document.querySelectorAll("[data-question]")) {
   });
 }
 
-const actionLabels = {
-  catalog_search: "Поиск в каталоге",
-  knowledge_search: "Поиск в базе знаний",
-  knowledge_confirmed: "Подтверждённый ответ менеджера",
-  tool_catalog_search: "Дополнительный поиск",
-  model_yandex: "YandexGPT",
-  model_openai: "GPT-5.4 mini",
-  route_n8n: "Маршрут n8n",
-  lead_escalation: "Обращение передано менеджеру",
-};
-const resultLabels = {
-  done: "выполнено",
-  error: "ошибка",
-};
-
 function addMessage(text, customer = false) {
   const message = element("article", undefined, "message" + (customer ? " customer" : ""));
   message.append(element("strong", customer ? "Вы" : "Помощник"), element("p", text));
@@ -43,26 +29,8 @@ function addMessage(text, customer = false) {
   return message;
 }
 
-function renderActions(actions) {
-  const trace = element("ul", undefined, "trace");
-  trace.setAttribute("aria-label", "Действия помощника");
-  for (const { type, status } of actions ?? []) {
-    if (!Object.hasOwn(actionLabels, type) || !Object.hasOwn(resultLabels, status)) continue;
-    const entry = element("li", actionLabels[type] + " · " + resultLabels[status]);
-    entry.dataset.state = status;
-    trace.append(entry);
-  }
-  return trace;
-}
-
-function renderAnswer(result) {
+function renderAnswer(result, intent) {
   const answer = addMessage(result.answer);
-  const labels = { yandex: "YandexGPT", openai: "GPT-5.4 mini", catalog: "Ответ по каталогу", knowledge: "Подтверждено менеджером" };
-  if (Object.hasOwn(labels, result.provider)) {
-    answer.append(element("p", labels[result.provider], "meta"));
-  }
-  const trace = renderActions(result.actions);
-  if (trace.children.length) answer.append(trace);
   for (const source of result.sources ?? []) {
     try {
       const url = new URL(source.url);
@@ -81,7 +49,11 @@ function renderAnswer(result) {
   const products = element("div", undefined, "cards");
   showProducts(products, result.products);
   if (products.children.length) answer.append(products);
-  if (!query && !byId("search-form").querySelector("button").disabled) {
+  if (intent === catalogIntent) {
+    query = "";
+    offset = 0;
+    byId("query").value = "";
+    byId("previous").disabled = byId("next").disabled = true;
     showProducts(catalogResults, result.products);
     status("search-status", result.products.length
       ? "Товары из последнего ответа помощника."
@@ -127,6 +99,7 @@ function showProducts(container, products) {
 }
 
 async function search(nextQuery, nextOffset, pageChange = false) {
+  const intent = ++catalogIntent;
   const previous = byId("previous");
   const next = byId("next");
   const button = byId("search-form").querySelector("button");
@@ -145,6 +118,7 @@ async function search(nextQuery, nextOffset, pageChange = false) {
   try {
     const params = new URLSearchParams({ q: nextQuery, limit: pageSize + 1, offset: nextOffset });
     const { items } = await request("/products?" + params);
+    if (intent !== catalogIntent) return;
     showProducts(catalogResults, items.slice(0, pageSize));
     query = nextQuery;
     offset = nextOffset;
@@ -155,6 +129,7 @@ async function search(nextQuery, nextOffset, pageChange = false) {
     status("search-status", count ? range : "По этому запросу ничего не найдено.");
     if (pageChange) byId("search-form").scrollIntoView({ block: "nearest" });
   } catch (error) {
+    if (intent !== catalogIntent) return;
     previous.disabled = previousDisabled;
     next.disabled = nextDisabled;
     status("search-status", error.message, true);
@@ -188,9 +163,10 @@ function submit(id, statusId, pending, action) {
   });
 }
 
-submit("chat-form", "chat-status", "Ожидаем ответ сервера…", async () => {
+submit("chat-form", "chat-status", "Готовим ответ…", async () => {
   const message = question.value.trim();
   if (!message) throw new Error("Опишите задачу.");
+  const intent = ++catalogIntent;
   await restoredChat;
   await startSession();
   const sent = addMessage(message, true);
@@ -210,7 +186,7 @@ submit("chat-form", "chat-status", "Ожидаем ответ сервера…"
   }
   history.push({ question: message, answer: result.answer });
   if (history.length > 4) history.shift();
-  renderAnswer(result);
+  renderAnswer(result, intent);
   lastQuestion = message;
   if (question.value.trim() === message) question.value = "";
   status("chat-status", "");

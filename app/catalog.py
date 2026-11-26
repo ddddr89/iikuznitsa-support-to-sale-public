@@ -4,10 +4,14 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import csv
+from itertools import islice
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from urllib.parse import urlsplit
+
+from app.catalog_matching import CATEGORIES, product_scope
 
 FIELDS = ("sku", "name", "category", "description", "url", "price_minor", "currency")
 MAX_PRICE_MINOR = (2**53 - 1) // (50 * 999)
@@ -88,6 +92,19 @@ class Catalog:
             aliases = self._vendor_matches(connection, q, limit, offset)
             if aliases is not None:
                 return aliases
+
+            scope = product_scope(q)
+            if scope:
+                categories = CATEGORIES[scope.category]
+                placeholders = ", ".join("?" for _ in categories)
+                rows = connection.execute(
+                    f"""SELECT p.* FROM catalog_products AS p
+                        WHERE p.category IN ({placeholders})
+                        ORDER BY p.price_minor IS NULL, p.price_minor, p.sku""",
+                    categories,
+                )
+                matches = (dict(row) for row in rows if scope.matches(row))
+                return list(islice(matches, offset, min(offset + limit, sys.maxsize)))
 
             tokens = list(dict.fromkeys(re.findall(r"[^\W_]+", q.lower())))[:32]
             if not tokens:

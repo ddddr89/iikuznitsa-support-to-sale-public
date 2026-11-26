@@ -4,6 +4,8 @@ let token = "";
 let selected = null;
 let quote = null;
 let session = 0;
+let queue = [];
+const leadFilter = byId("lead-filter");
 const workspace = byId("workspace");
 const accessForm = byId("access-form");
 const refresh = byId("refresh");
@@ -66,8 +68,11 @@ add.addEventListener("click", () => {
 });
 quoteForm.addEventListener("input", clearQuote);
 
-function showLeads(leads) {
-  const cards = leads.map((lead) => {
+function showLeads(leads = queue) {
+  queue = leads;
+  const visible = queue.filter((lead) => leadFilter.value === "all" ||
+    (lead.status === "closed") === (leadFilter.value === "closed"));
+  const cards = visible.map((lead) => {
     const card = element("article", undefined, "card");
     const date = new Date(lead.created_at);
     const metadata = [lead.status === "escalated" ? "Эскалация" : leadStatus(lead.status), lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
@@ -96,6 +101,8 @@ function showLeads(leads) {
   byId("lead-list").replaceChildren(...(cards.length ? cards : [element("p", "Заявок пока нет.")]));
 }
 
+leadFilter.addEventListener("change", () => showLeads());
+
 function resetSelection() {
   selected = null;
   quoteForm.hidden = true;
@@ -121,6 +128,8 @@ function showSession(active) {
 byId("sign-out").addEventListener("click", () => {
   session += 1;
   token = "";
+  queue = [];
+  leadFilter.value = "open";
   refresh.disabled = false;
   resetSelection();
   byId("lead-list").replaceChildren();

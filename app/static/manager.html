@@ -37,6 +37,12 @@
   <div class="columns manager-layout" id="workspace" hidden>
     <section class="panel" aria-labelledby="leads">
       <h2 id="leads">Входящие заявки</h2>
+      <label for="lead-filter">Показывать заявки</label>
+      <select id="lead-filter">
+        <option value="open">Открытые</option>
+        <option value="closed">Закрытые</option>
+        <option value="all">Все заявки</option>
+      </select>
       <div id="lead-list" class="cards"></div>
     </section>
     <section class="panel" aria-labelledby="quote">

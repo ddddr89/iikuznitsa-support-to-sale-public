@@ -58,7 +58,8 @@ try {
     assert.equal(await page.locator("#question").inputValue(), question);
     await page.unroute("**/api/v1/chat");
     await page.locator("#chat-form button").click();
-    await page.getByRole("list", { name: "Действия помощника" }).waitFor();
+    await page.locator("#conversation .message:not(.customer)").last().waitFor();
+    assert.equal(await page.getByRole("list", { name: "Действия помощника" }).count(), 0);
     assert.equal(await page.locator(".message.customer").count(), 1);
     await page.getByText("Товары из последнего ответа помощника.").waitFor();
     await page.reload();

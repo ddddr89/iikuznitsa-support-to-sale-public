@@ -67,7 +67,9 @@ try {
     assert.equal(chat.provider, "yandex");
     assert.ok(chat.actions.some((action) => action.type === "route_n8n" && action.status === "done"));
   }
-  await page.getByRole("list", { name: "Действия помощника" }).last().waitFor();
+  await page.locator("#conversation .message:not(.customer)").last().waitFor();
+  assert.equal(await page.getByRole("list", { name: "Действия помощника" }).count(), 0);
+  assert.ok(chat.actions.some((action) => action.type === "catalog_search" && action.status === "done"));
   await page.screenshot({ path: resolve(output, "client.png"), fullPage: true });
   await pause(page, 8500);
   await page.locator("#escalate").click();

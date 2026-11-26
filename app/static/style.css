@@ -121,11 +121,6 @@ textarea + button, .actions, #download { margin-top: .85rem; }
 .message p { white-space: pre-wrap; }
 .message .cards { margin-top: .65rem; }
 .message .card { background: var(--paper); }
-.trace { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; padding: 0; list-style: none; }
-.trace li { border: 1px solid #c9d5df; border-radius: .75rem; padding: .3rem .58rem; background: var(--paper); color: var(--muted); font-size: .8rem; }
-.trace li::before { content: ""; display: inline-block; width: .42rem; height: .42rem; margin-right: .35rem; border-radius: 50%; background: var(--blue); vertical-align: .08rem; }
-.trace li[data-state="error"] { color: var(--accent); border-color: #e7bcc2; }
-.trace li[data-state="error"]::before { background: var(--accent); }
 #downloads button { margin-top: 0; }
 #escalate { margin-top: .5rem; }
 #knowledge-form { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--edge); }
@@ -198,3 +193,5 @@ select { font: inherit; width: 100%; padding: .6rem; border: 1px solid var(--fie
   .hero-content { padding: 1rem; }
   .hero h1 { font-size: 1.42rem; }
 }
+
+#lead-list { margin-top: .85rem; }
