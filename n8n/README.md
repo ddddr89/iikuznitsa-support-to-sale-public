@@ -1,10 +1,10 @@
 # Шлюз ИИ в n8n
 
-1. Импортируйте `workflow.json` в отдельный workflow через Import from File. Откройте узел **Chat webhook** и привяжите credential типа **Header Auth** с именем заголовка `X-Webhook-Secret` и случайным секретом в поле Value.
-2. В **YandexGPT** привяжите отдельный Header Auth. В поле Name укажите `Authorization`, в Value задайте `Bearer <API-ключ>`. Привяжите этот credential также в **Yandex after catalog search**. Замените `REPLACE_FOLDER_ID` в **Prepare prompt** и заголовках `OpenAI-Project` обоих HTTP-узлов на идентификатор каталога сервисного аккаунта. [Yandex AI Studio](https://aistudio.yandex.ru/ru/docs/ai-studio/api-ref/authentication)
-3. Если доступен OpenAI, в **OpenAI** привяжите отдельный Header Auth. В рабочем экземпляре узел выключен до настройки ключа. В поле Name укажите `Authorization`, в Value задайте `Bearer <API-ключ>`. [GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini)
-4. Опубликуйте workflow. Из узла **Chat webhook** возьмите Production URL и передайте его FastAPI через `N8N_WEBHOOK_URL`. Через `N8N_WEBHOOK_SECRET` передайте тот же секрет, который хранится в credential вебхука. Используйте локальную сеть либо HTTPS для транспорта. [Webhook в n8n](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/)
-5. Для проверки отправьте запрос через `POST /api/v1/chat`. При работающем YandexGPT поле `provider` должно быть `yandex`. В тестовой копии workflow временно укажите недоступную модель YandexGPT, чтобы проверить `openai`. Затем отключите webhook и уберите ключи из окружения тестового FastAPI, чтобы проверить `catalog`. Карточки каталога должны остаться в ответе во всех сценариях.
+1. Рабочий workflow `Support-to-Sale AI | Chat v1` имеет ID `iikuznitsaChat01`. Обновляйте существующий workflow по этому ID. В узле **Приём обращения** используется Header Auth с заголовком `X-Webhook-Secret`.
+2. Узлы **Запрос к Яндексу** и **Яндекс после поиска** используют один Header Auth с заголовком `Authorization` и значением вида `Bearer <API-ключ>`. При восстановлении замените `REPLACE_FOLDER_ID` в узле **Подготовка запроса** и в заголовках `OpenAI-Project` обоих HTTP-узлов. [Yandex AI Studio](https://aistudio.yandex.ru/ru/docs/ai-studio/api-ref/authentication)
+3. Узел **Резервная модель — неактивна** отключён. При ошибке FastAPI сохраняет прямой маршрут к YandexGPT.
+4. Опубликуйте существующий workflow. Production URL узла **Приём обращения** и секрет передаются FastAPI через `N8N_WEBHOOK_URL` и `N8N_WEBHOOK_SECRET`. [Вебхук n8n](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/)
+5. Для проверки отправьте запрос через `POST /api/v1/chat`. Основной маршрут возвращает `provider: yandex` и выполненное действие `route_n8n`. При неверном секрете вебхук возвращает HTTP 403.
 
 HTTP-узлы моделей ограничены 7 секундами каждый. YandexGPT может выполнить один вызов каталога с таймаутом 3,5 секунды и запросить итоговый ответ. Общий лимит workflow — 26 секунд, таймаут адаптера — 27 секунд. При сбое webhook FastAPI пробует прямые вызовы из раздела ниже. Поле `provider` сообщает, откуда получен ответ. Контакты из формы заявки через webhook не передаются. Сообщение чата передаётся провайдерам, поэтому для проверки используйте сообщения без персональных данных. Хранение успешных, ошибочных и ручных запусков в экспортируемом workflow отключено.
 
@@ -40,3 +40,10 @@ Workflow `Support-to-Sale AI | Chat v1` с ID `iikuznitsaChat01` опублик�
 Путь и секрет читаются из двух отдельных файлов в `.stand/`.
 Приложение сохраняет прямой маршрут к YandexGPT при ошибке webhook, а
 запросы с точным подтверждённым ответом обслуживает из локальной базы знаний.
+
+
+### Локализация схемы
+
+У 12 рабочих узлов есть русские названия и видимые на схеме Notes с назначением, входом, действием и выходом. Семь Sticky Notes поясняют общий маршрут, приём, работу модели, каталог, проверку, возврат клиенту и ошибки.
+
+[Резервная копия до локализации](backups/chat-v1-before-localization.json) получена из опубликованной версии. Ссылки на секреты в копии удалены, идентификатор каталога Яндекса заменён шаблоном. Для восстановления нужно привязать те же учётные данные к существующему workflow.
