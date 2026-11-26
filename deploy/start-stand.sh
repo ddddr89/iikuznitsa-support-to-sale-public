@@ -19,8 +19,8 @@ if [[ ! -s "$stand/manager-token" ]]; then
     openssl rand -hex 32 > "$stand/manager-token"
 fi
 if [[ ! -e "$stand/catalog.sqlite3" ]]; then
-    .venv/bin/python -m app.catalog "$stand/catalog.sqlite3" data/softline-sample.csv \
-        --source softline_sample --expected-count 6
+    .venv/bin/python -m app.catalog "$stand/catalog.sqlite3" data/demo.csv \
+        --source demo --expected-count 6
 fi
 tmux -f /dev/null -S "$socket" new-session -d -s support-to-sale bash deploy/serve-stand.sh "$port"
 if [[ ${SUPPORT_STAND_PROBE:-1} == 1 ]]; then
