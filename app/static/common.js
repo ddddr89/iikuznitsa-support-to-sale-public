@@ -9,14 +9,14 @@ const errors = {
   503: "Сервис временно недоступен.",
 };
 
-export async function request(path, { body, token, download = false } = {}) {
+export async function request(path, { body, token, download = false, method } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = "Bearer " + token;
   let response;
   try {
     response = await fetch("/api/v1" + path, {
-      method: body === undefined ? "GET" : "POST",
+      method: method ?? (body === undefined ? "GET" : "POST"),
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: "error",

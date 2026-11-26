@@ -12,6 +12,7 @@ const question = byId("question");
 const actionLabels = {
   catalog_search: "Поиск в каталоге",
   knowledge_search: "Поиск в базе знаний",
+  knowledge_confirmed: "Подтверждённый ответ менеджера",
   tool_catalog_search: "Дополнительный поиск",
   model_yandex: "YandexGPT",
   model_openai: "GPT-5.4 mini",
@@ -45,7 +46,7 @@ function renderActions(actions) {
 
 function renderAnswer(result) {
   const answer = addMessage(result.answer);
-  const labels = { yandex: "YandexGPT", openai: "GPT-5.4 mini", catalog: "Ответ по каталогу" };
+  const labels = { yandex: "YandexGPT", openai: "GPT-5.4 mini", catalog: "Ответ по каталогу", knowledge: "Подтверждено менеджером" };
   if (Object.hasOwn(labels, result.provider)) {
     answer.append(element("p", labels[result.provider], "meta"));
   }

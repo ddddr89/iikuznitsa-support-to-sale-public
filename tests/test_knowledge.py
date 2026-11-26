@@ -57,3 +57,18 @@ class KnowledgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfirmedKnowledgeTests(unittest.TestCase):
+    def test_manager_confirmation_upserts_and_survives_reopen(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "confirmed.sqlite3"
+            knowledge = Knowledge(path)
+            knowledge.init()
+            question = "Как проверить статус конкурсного счёта?"
+            first = knowledge.confirm("lead-1", question, "Первый ответ")
+            second = knowledge.confirm("lead-1", question, "Проверенный ответ")
+            self.assertEqual(first, second)
+            results = Knowledge(path).search(question)
+            self.assertEqual(results[0]["kind"], "manager_confirmed")
+            self.assertEqual(results[0]["excerpt"], "Проверенный ответ")

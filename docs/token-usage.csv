@@ -1,0 +1,7 @@
+scenario,provider_call,reported_model,input_tokens,cached_tokens,output_tokens,total_tokens
+sku_lookup,1,yandexgpt-5.1,257,0,18,275
+sku_lookup,2,yandexgpt-5.1,369,0,67,436
+knowledge_delivery,1,yandexgpt-5.1,713,0,33,746
+consultation_1,1,yandexgpt-5.1,929,192,106,1035
+consultation_2,1,yandexgpt-5.1,876,192,106,982
+n8n_sku_lookup,1,yandexgpt-5.1,225,,12,237

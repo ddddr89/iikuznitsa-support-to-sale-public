@@ -52,6 +52,16 @@
         <button type="button" id="download-invoice" class="secondary" hidden>Скачать черновик счёта PDF</button>
       </div>
       <p id="download-status" class="status" role="status"></p>
+      <form id="knowledge-form" hidden>
+        <h3>Подтверждённый ответ</h3>
+        <label for="knowledge-question">Общий вопрос без данных клиента</label>
+        <input id="knowledge-question" maxlength="2000" required>
+        <label for="knowledge-answer">Проверенный ответ</label>
+        <textarea id="knowledge-answer" maxlength="2000" required></textarea>
+        <label><input id="knowledge-anonymized" type="checkbox" required> Проверено, персональных данных нет</label>
+        <button>Сохранить в базе знаний</button>
+        <p id="knowledge-status" class="status" role="status"></p>
+      </form>
     </section>
   </div>
 </main>

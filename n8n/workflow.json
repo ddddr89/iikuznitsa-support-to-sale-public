@@ -81,7 +81,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const alternative = $json.result?.alternatives?.[0];\nconst text = alternative?.message?.text;\nconst isFinal = alternative?.status === 'ALTERNATIVE_STATUS_FINAL';\nconst answer = isFinal && typeof text === 'string' ? text.trim() : '';\nreturn { json: { answer, provider: 'yandex' } };\n"
+        "jsCode": "const alternative = $json.result?.alternatives?.[0];\nconst text = alternative?.message?.text;\nconst isFinal = alternative?.status === 'ALTERNATIVE_STATUS_FINAL';\nconst answer = isFinal && typeof text === 'string' ? text.trim() : '';\nconst usage = $json.result?.usage;\nconst tokens = usage ? { input_tokens: Number(usage.inputTextTokens), output_tokens: Number(usage.completionTokens), total_tokens: Number(usage.totalTokens) } : undefined;\nreturn { json: { answer, provider: 'yandex', usage: tokens } };\n"
       }
     },
     {

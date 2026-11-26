@@ -65,6 +65,13 @@ class Commercial:
             )
         return {**lead, "duplicate": False}
 
+    def get_lead(self, lead_id):
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            if row is None:
+                raise KeyError(lead_id)
+            return dict(row)
+
     def list_leads(self):
         with self.connection() as db:
             return [dict(row) for row in db.execute(

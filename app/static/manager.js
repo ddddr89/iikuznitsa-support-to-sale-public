@@ -10,6 +10,7 @@ const refresh = byId("refresh");
 const downloadArea = byId("downloads");
 const invoice = byId("download-invoice");
 const quoteForm = byId("quote-form");
+const knowledgeForm = byId("knowledge-form");
 const items = byId("quote-items");
 const download = byId("download");
 const add = byId("add-item");
@@ -80,6 +81,9 @@ function showLeads(leads) {
       byId("selection").textContent = "Заявка № " + lead.id;
       items.replaceChildren();
       quoteForm.hidden = false;
+      knowledgeForm.reset();
+      knowledgeForm.hidden = false;
+      status("knowledge-status", "");
       addItem(lead.sku || "").focus();
     });
     const row = element("div", undefined, "row");
@@ -93,6 +97,8 @@ function showLeads(leads) {
 function resetSelection() {
   selected = null;
   quoteForm.hidden = true;
+  knowledgeForm.reset();
+  knowledgeForm.hidden = true;
   items.replaceChildren();
   byId("selection").textContent = "Выберите заявку из списка.";
   clearQuote();
@@ -226,3 +232,28 @@ async function downloadDocument(button, kind) {
 
 download.addEventListener("click", () => downloadDocument(download, "quote"));
 invoice.addEventListener("click", () => downloadDocument(invoice, "invoice"));
+
+knowledgeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const lead = selected;
+  const currentSession = session;
+  const button = knowledgeForm.querySelector("button");
+  if (!lead || !token || button.disabled) return;
+  button.disabled = true;
+  try {
+    await request("/manager/leads/" + encodeURIComponent(lead.id) + "/knowledge", {
+      token,
+      method: "PUT",
+      body: {
+        question: byId("knowledge-question").value.trim(),
+        answer: byId("knowledge-answer").value.trim(),
+        anonymized: byId("knowledge-anonymized").checked,
+      },
+    });
+    if (selected === lead && currentSession === session) status("knowledge-status", "Ответ подтверждён и сохранён.");
+  } catch (error) {
+    if (selected === lead && currentSession === session) status("knowledge-status", error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});

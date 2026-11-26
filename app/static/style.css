@@ -69,3 +69,6 @@ textarea + button, .actions, #download { margin-top: .85rem; }
 .trace li[data-state="failed"], .trace li[data-state="error"] { color: #a12631; border-color: #e7bcc2; }
 #downloads button { margin-top: 0; }
 #escalate { margin-top: .5rem; }
+
+#knowledge-form { margin-top: 1.25rem; }
+#knowledge-form input[type="checkbox"] { display: inline; width: auto; margin-right: .35rem; }

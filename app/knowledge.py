@@ -155,6 +155,13 @@ class Knowledge:
                 CREATE VIRTUAL TABLE IF NOT EXISTS support_knowledge USING fts5(
                     title, excerpt, url UNINDEXED, tokenize='unicode61'
                 );
+                CREATE TABLE IF NOT EXISTS support_confirmed (
+                    id INTEGER PRIMARY KEY, lead_id TEXT NOT NULL UNIQUE,
+                    question TEXT NOT NULL, answer TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS support_confirmed_search USING fts5(
+                    title, excerpt, tokenize='unicode61'
+                );
                 CREATE TABLE IF NOT EXISTS support_intents (
                     topic TEXT PRIMARY KEY, terms TEXT NOT NULL,
                     url TEXT NOT NULL, records INTEGER NOT NULL
@@ -202,6 +209,19 @@ class Knowledge:
             ).fetchone()
         return dict(row) if row else dict(pages=0, excerpts=0, chat_lines=0, chat_files=0)
 
+    def confirm(self, lead_id, question, answer):
+        with self.connection() as db:
+            record = db.execute("""
+                INSERT INTO support_confirmed (lead_id, question, answer) VALUES (?, ?, ?)
+                ON CONFLICT(lead_id) DO UPDATE SET question=excluded.question, answer=excluded.answer
+                RETURNING id
+            """, (lead_id, question, answer)).fetchone()
+            entry_id = record["id"]
+            db.execute("DELETE FROM support_confirmed_search WHERE rowid = ?", (entry_id,))
+            db.execute("INSERT INTO support_confirmed_search (rowid, title, excerpt) VALUES (?, ?, ?)",
+                       (entry_id, question, answer))
+            return entry_id
+
     def search(self, message):
         tokens = [
             word for word in dict.fromkeys(re.findall(r"[^\W_]+", message.lower()))
@@ -215,12 +235,19 @@ class Knowledge:
         ))
         query = " OR ".join(f'"{word}"*' for word in [*tokens, *stems])
         with self.connection() as db:
+            reviewed = db.execute("""
+                SELECT title, excerpt FROM support_confirmed_search
+                WHERE support_confirmed_search MATCH ?
+                ORDER BY bm25(support_confirmed_search, 5, 1) LIMIT 1
+            """, (" AND ".join(f'"{word}"*' for word in tokens),)).fetchall()
             rows = db.execute("""
                 SELECT title, excerpt, url FROM support_knowledge
                 WHERE support_knowledge MATCH ?
                 ORDER BY bm25(support_knowledge, 4, 1) LIMIT 3
             """, (query,)).fetchall()
-            results = [dict(row) for row in rows]
+            results = [{"title": row["title"], "excerpt": row["excerpt"], "url": None,
+                        "kind": "manager_confirmed"} for row in reviewed]
+            results.extend(dict(row) for row in rows[:3 - len(results)])
             if results:
                 return results
             for intent in db.execute("SELECT * FROM support_intents ORDER BY records DESC"):

@@ -1,4 +1,5 @@
 import os
+import re
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -54,6 +55,12 @@ class QuoteItem(Input):
 class Quote(Input):
     lead_id: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
     items: Annotated[list[QuoteItem], Field(min_length=1, max_length=50)]
+
+
+class ConfirmedAnswer(Input):
+    question: Text
+    answer: Text
+    anonymized: Literal[True]
 
 
 def require_manager(
@@ -120,12 +127,20 @@ def create_app(db_path=None):
         if not products and body.history:
             products = catalog.search(body.history[-1].question, 5)
         resources = knowledge.search(body.message)
-        result = reply(
-            body.message, products, search=catalog.search, knowledge=resources,
-            history=[item.model_dump() for item in body.history],
-        )
+        confirmed = resources[0] if resources and resources[0].get("kind") == "manager_confirmed" else None
+        if confirmed and confirmed["title"].casefold() == body.message.casefold():
+            result = {"answer": confirmed["excerpt"], "provider": "knowledge", "actions": []}
+        else:
+            result = reply(
+                body.message, products, search=catalog.search, knowledge=resources,
+                history=[item.model_dump() for item in body.history],
+            )
+            if confirmed and result["provider"] == "catalog":
+                result["answer"] = confirmed["excerpt"]
         actions = [{"type": "catalog_search", "status": "done"},
                    {"type": "knowledge_search", "status": "done"}]
+        if confirmed:
+            actions.append({"type": "knowledge_confirmed", "status": "done"})
         return {
             "products": products,
             **result,
@@ -143,6 +158,20 @@ def create_app(db_path=None):
     @api.get("/api/v1/manager/leads", dependencies=[Depends(require_manager)])
     def leads():
         return {"items": commercial.list_leads()}
+
+    @api.put("/api/v1/manager/leads/{lead_id}/knowledge", dependencies=[Depends(require_manager)])
+    def confirm_answer(lead_id: str, body: ConfirmedAnswer):
+        try:
+            lead = commercial.get_lead(lead_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Заявка не найдена") from exc
+        text = f"{body.question} {body.answer}".casefold()
+        contact = lead["contact"].strip().casefold()
+        if (len(contact) >= 3 and contact in text) or re.search(
+            r"[^\s@]+@[^\s@]+\.[^\s@]+|(?<!\d)\+?\d[\d ()-]{8,}\d(?!\d)", text
+        ):
+            raise HTTPException(422, "Удалите контактные данные из вопроса и ответа")
+        return {"id": knowledge.confirm(lead_id, body.question, body.answer), "status": "confirmed"}
 
     @api.post("/api/v1/manager/quotes", status_code=201, dependencies=[Depends(require_manager)])
     def create_quote(body: Quote):
