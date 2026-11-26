@@ -3,23 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Кабинет менеджера · Support-to-Sale</title>
+  <title>Управление обращениями · ИИ-помощник</title>
   <link rel="stylesheet" href="/static/style.css">
   <script type="module" src="/static/manager.js"></script>
 </head>
-<body>
-<header>
+<body class="manager-page">
+<header class="site-header">
   <div class="shell nav">
-    <a class="brand" href="/">Support<span>–</span>to<span>–</span>Sale</a>
+    <a class="brand" href="/" aria-label="Софтлайн Решения, главная">
+      <img src="/static/softline-logo.png" width="160" height="36" alt="Софтлайн Решения SOFL">
+    </a>
+    <a class="product-name" href="/">ИИ-помощник</a>
     <nav class="roles" aria-label="Переключение роли">
-      <a href="/">Клиент</a>
+      <a href="/client">Клиент</a>
       <a href="/manager" aria-current="page">Менеджер</a>
     </nav>
   </div>
 </header>
 <main class="shell">
-  <div class="intro"><h1>Кабинет менеджера</h1><p>Откройте заявку клиента и подготовьте документы.</p></div>
-  <section class="panel" aria-labelledby="access">
+  <div class="intro"><h1>Управление обращениями</h1><p>Заявки клиентов, коммерческие предложения и подтверждённые ответы.</p></div>
+  <section class="panel access-panel" aria-labelledby="access">
     <h2 id="access">Доступ к заявкам</h2>
     <form id="access-form">
       <label for="token">Токен менеджера</label>
@@ -31,15 +34,34 @@
     </div>
     <p id="access-status" class="status" role="status"></p>
   </section>
-  <div class="columns" id="workspace" hidden>
+  <div class="columns manager-layout" id="workspace" hidden>
     <section class="panel" aria-labelledby="leads">
       <h2 id="leads">Входящие заявки</h2>
       <div id="lead-list" class="cards"></div>
     </section>
     <section class="panel" aria-labelledby="quote">
-      <h2 id="quote">Коммерческое предложение</h2>
+      <h2 id="quote">Работа с заявкой</h2>
       <p id="selection">Выберите заявку из списка.</p>
+      <section id="lead-details" hidden aria-labelledby="history-title">
+        <h3 id="history-title">История обращения</h3>
+        <div id="lead-history" class="timeline"></div>
+        <form id="lead-update-form">
+          <label for="lead-state">Статус обращения</label>
+          <select id="lead-state">
+            <option value="new">Новое</option>
+            <option value="escalated">Передано менеджеру</option>
+            <option value="in_progress">В работе</option>
+            <option value="answered">Ответ отправлен</option>
+            <option value="closed">Обращение закрыто</option>
+          </select>
+          <label for="manager-reply">Ответ клиенту</label>
+          <textarea id="manager-reply" rows="3" maxlength="2000"></textarea>
+          <button>Сохранить изменения</button>
+        </form>
+        <p id="lead-update-status" class="status" role="status"></p>
+      </section>
       <form id="quote-form" hidden>
+        <h3>Коммерческое предложение</h3>
         <div id="quote-items" class="cards"></div>
         <div class="actions">
           <button id="add-item" class="secondary" type="button">Добавить позицию</button>

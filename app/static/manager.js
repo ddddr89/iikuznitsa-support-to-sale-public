@@ -1,4 +1,4 @@
-import { byId, element, money, request, status } from "./common.js";
+import { byId, element, leadStatus, money, request, showHistory, status } from "./common.js";
 
 let token = "";
 let selected = null;
@@ -11,6 +11,7 @@ const downloadArea = byId("downloads");
 const invoice = byId("download-invoice");
 const quoteForm = byId("quote-form");
 const knowledgeForm = byId("knowledge-form");
+const leadUpdateForm = byId("lead-update-form");
 const items = byId("quote-items");
 const download = byId("download");
 const add = byId("add-item");
@@ -69,7 +70,7 @@ function showLeads(leads) {
   const cards = leads.map((lead) => {
     const card = element("article", undefined, "card");
     const date = new Date(lead.created_at);
-    const metadata = [lead.status === "escalated" ? "Эскалация" : "", lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
+    const metadata = [lead.status === "escalated" ? "Эскалация" : leadStatus(lead.status), lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
     card.append(element("h3", "Заявка № " + lead.id));
     card.append(element("p", metadata.filter(Boolean).join(" · "), "meta"));
     card.append(element("p", lead.contact), element("p", lead.message));
@@ -84,7 +85,8 @@ function showLeads(leads) {
       knowledgeForm.reset();
       knowledgeForm.hidden = false;
       status("knowledge-status", "");
-      addItem(lead.sku || "").focus();
+      addItem(lead.sku || "");
+      loadLeadDetail(lead);
     });
     const row = element("div", undefined, "row");
     row.append(choose);
@@ -99,6 +101,7 @@ function resetSelection() {
   quoteForm.hidden = true;
   knowledgeForm.reset();
   knowledgeForm.hidden = true;
+  byId("lead-details").hidden = true;
   items.replaceChildren();
   byId("selection").textContent = "Выберите заявку из списка.";
   clearQuote();
@@ -253,6 +256,57 @@ knowledgeForm.addEventListener("submit", async (event) => {
     if (selected === lead && currentSession === session) status("knowledge-status", "Ответ подтверждён и сохранён.");
   } catch (error) {
     if (selected === lead && currentSession === session) status("knowledge-status", error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function loadLeadDetail(lead) {
+  const currentSession = session;
+  const section = byId("lead-details");
+  section.hidden = false;
+  leadUpdateForm.hidden = true;
+  leadUpdateForm.reset();
+  byId("lead-history").replaceChildren();
+  status("lead-update-status", "Загружаем историю…");
+  try {
+    const detail = await request("/manager/leads/" + encodeURIComponent(lead.id), { token });
+    if (currentSession !== session || selected !== lead) return;
+    showHistory(byId("lead-history"), detail);
+    byId("lead-state").value = detail.status;
+    leadUpdateForm.hidden = false;
+    status("lead-update-status", "");
+  } catch (error) {
+    if (currentSession === session && selected === lead) status("lead-update-status", error.message, true);
+  }
+}
+
+leadUpdateForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const lead = selected;
+  const currentSession = session;
+  const button = leadUpdateForm.querySelector("button");
+  if (!lead || !token || button.disabled) return;
+  const answer = byId("manager-reply").value.trim();
+  button.disabled = true;
+  try {
+    const path = "/manager/leads/" + encodeURIComponent(lead.id);
+    const detail = await request(path, {
+      token, method: "PATCH", body: { status: byId("lead-state").value, ...(answer ? { answer } : {}) },
+    });
+    if (currentSession !== session || selected !== lead) return;
+    showHistory(byId("lead-history"), detail);
+    byId("lead-state").value = detail.status;
+    byId("manager-reply").value = "";
+    status("lead-update-status", "Изменения сохранены.");
+    try {
+      const { items } = await request("/manager/leads", { token });
+      if (currentSession === session && selected === lead) showLeads(items);
+    } catch {
+      // The updated detail remains available when list refresh fails.
+    }
+  } catch (error) {
+    if (currentSession === session && selected === lead) status("lead-update-status", error.message, true);
   } finally {
     button.disabled = false;
   }

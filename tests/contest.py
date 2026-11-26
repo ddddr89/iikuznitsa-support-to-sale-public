@@ -23,7 +23,8 @@ class ContestTests(unittest.TestCase):
         self.assertEqual(call(self.api + "/health")["status"], "ok")
 
     def test_02_client_and_manager_pages(self):
-        self.assertIn(b"<html", call("/"))
+        self.assertIn(b'href="/client"', call("/"))
+        self.assertIn(b'id="chat-form"', call("/client"))
         self.assertIn(b"<html", call("/manager"))
 
     def test_03_exact_sku_search(self):

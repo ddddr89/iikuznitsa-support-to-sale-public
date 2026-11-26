@@ -2,13 +2,15 @@ import os
 import re
 from collections import deque
 from contextlib import asynccontextmanager
+from hashlib import sha256
+from html import unescape
 from pathlib import Path
-from secrets import compare_digest
+from secrets import compare_digest, token_urlsafe
 from threading import Lock
 from time import monotonic
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +26,17 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Contact = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)]
 Sku = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 STATIC = Path(__file__).with_name("static")
+SESSION_COOKIE = "__Host-support_session"
+SESSION_LIFETIME = 7 * 86400
+LeadStatus = Literal["new", "escalated", "in_progress", "answered", "closed"]
+
+
+def session_digest(request: Request):
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        return sha256(token.encode()).hexdigest()
+    return None
+
 
 
 class Input(BaseModel):
@@ -57,6 +70,11 @@ class Quote(Input):
     items: Annotated[list[QuoteItem], Field(min_length=1, max_length=50)]
 
 
+class LeadUpdate(Input):
+    status: LeadStatus | None = None
+    answer: Text | None = None
+
+
 class ConfirmedAnswer(Input):
     question: Text
     answer: Text
@@ -78,6 +96,16 @@ def create_app(db_path=None):
     catalog = Catalog(path)
     commercial = Commercial(path)
     knowledge = Knowledge(os.getenv("APP_KNOWLEDGE_DB") or path)
+
+    def session_owner(request: Request):
+        owner = session_digest(request)
+        return owner if owner and commercial.active_session(owner) else None
+
+    def require_session(request: Request):
+        owner = session_owner(request)
+        if owner is None:
+            raise HTTPException(404, "Обращение не найдено")
+        return owner
     chat_max = int(os.getenv("APP_CHAT_PER_MINUTE", "0"))
     chat_times = deque()
     chat_lock = Lock()
@@ -90,11 +118,22 @@ def create_app(db_path=None):
         yield
 
     api = FastAPI(title="Support-to-Sale AI", lifespan=lifespan)
+
+    @api.middleware("http")
+    async def prevent_private_caching(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(("/api/v1/client/", "/api/v1/manager/", "/api/v1/leads")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
     api.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @api.get("/", include_in_schema=False)
-    def client():
+    def home():
         return FileResponse(STATIC / "index.html")
+
+    @api.get("/client", include_in_schema=False)
+    def client():
+        return FileResponse(STATIC / "client.html")
 
     @api.get("/manager", include_in_schema=False)
     def manager():
@@ -114,7 +153,7 @@ def create_app(db_path=None):
         return {"items": catalog.search(q, limit, offset)}
 
     @api.post("/api/v1/chat")
-    def chat(body: Chat):
+    def chat(body: Chat, request: Request):
         if chat_max > 0:
             with chat_lock:
                 now = monotonic()
@@ -139,6 +178,9 @@ def create_app(db_path=None):
                 result["answer"] = confirmed["excerpt"]
         actions = [{"type": "catalog_search", "status": "done"},
                    {"type": "knowledge_search", "status": "done"}]
+        owner = session_owner(request)
+        if owner:
+            commercial.record_turn(owner, body.message, result["answer"])
         if confirmed:
             actions.append({"type": "knowledge_confirmed", "status": "done"})
         return {
@@ -150,14 +192,57 @@ def create_app(db_path=None):
         }
 
     @api.post("/api/v1/leads", status_code=201)
-    def create_lead(body: Lead):
+    def create_lead(body: Lead, request: Request):
         if body.sku and catalog.get(body.sku) is None:
             raise HTTPException(404, "Товар не найден")
-        return commercial.create_lead(body.contact, body.message, body.sku, body.escalation)
+        return commercial.create_lead(
+            body.contact, body.message, body.sku, body.escalation, session_owner(request),
+        )
+
+    @api.get("/api/v1/client/leads")
+    def client_leads(request: Request, response: Response):
+        owner = session_owner(request)
+        if owner is None:
+            if request.headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+                raise HTTPException(403, "Откройте раздел клиента на сайте")
+            token = token_urlsafe(32)
+            commercial.create_session(sha256(token.encode()).hexdigest(), SESSION_LIFETIME)
+            response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_LIFETIME, secure=True,
+                                httponly=True, samesite="strict", path="/")
+            return {"items": []}
+        return {"items": commercial.client_leads(owner)}
+
+    @api.get("/api/v1/client/leads/{lead_id}")
+    def client_lead(lead_id: str, owner: Annotated[str, Depends(require_session)]):
+        try:
+            return commercial.lead_detail(lead_id, owner)
+        except KeyError as exc:
+            raise HTTPException(404, "Обращение не найдено") from exc
+
+    @api.get("/api/v1/client/quotes/{quote_id}/{kind}.pdf")
+    def client_quote(quote_id: str, kind: Literal["quote", "invoice"],
+                     owner: Annotated[str, Depends(require_session)]):
+        return pdf_response(quote_id, kind, owner)
 
     @api.get("/api/v1/manager/leads", dependencies=[Depends(require_manager)])
     def leads():
         return {"items": commercial.list_leads()}
+
+    @api.get("/api/v1/manager/leads/{lead_id}", dependencies=[Depends(require_manager)])
+    def manager_lead(lead_id: str):
+        try:
+            return commercial.lead_detail(lead_id)
+        except KeyError as exc:
+            raise HTTPException(404, "Обращение не найдено") from exc
+
+    @api.patch("/api/v1/manager/leads/{lead_id}", dependencies=[Depends(require_manager)])
+    def update_lead(lead_id: str, body: LeadUpdate):
+        if body.answer is None and body.status is None:
+            raise HTTPException(422, "Укажите ответ или статус")
+        try:
+            return commercial.update_lead(lead_id, body.status, body.answer)
+        except KeyError as exc:
+            raise HTTPException(404, "Обращение не найдено") from exc
 
     @api.put("/api/v1/manager/leads/{lead_id}/knowledge", dependencies=[Depends(require_manager)])
     def confirm_answer(lead_id: str, body: ConfirmedAnswer):
@@ -209,8 +294,13 @@ def create_app(db_path=None):
 
     @api.get("/api/v1/manager/quotes/{quote_id}/{kind}.pdf", dependencies=[Depends(require_manager)])
     def download_pdf(quote_id: str, kind: Literal["quote", "invoice"]):
+        return pdf_response(quote_id, kind)
+
+    def pdf_response(quote_id, kind, owner=None):
         try:
-            quote = commercial.get_quote(quote_id)
+            quote = commercial.get_quote(quote_id, owner)
+            for item in quote["items"]:
+                item["name"] = unescape(unescape(item["name"]))
         except KeyError as exc:
             raise HTTPException(404, "КП не найдено") from exc
         return Response(render_pdf(quote, kind), media_type="application/pdf", headers={

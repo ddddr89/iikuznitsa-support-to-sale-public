@@ -24,11 +24,14 @@ try {
     executablePath: process.env.CHROME_BIN || "/opt/google/chrome/chrome",
     headless: process.env.DEMO_HEADLESS !== "0",
   });
-  const page = await browser.newPage({ acceptDownloads: true });
+  const viewport = process.env.DEMO_MOBILE === "1" ? { width: 390, height: 844 } : { width: 1280, height: 900 };
+  const page = await browser.newPage({ acceptDownloads: true, viewport });
   page.setDefaultTimeout(25_000);
   const contact = `demo-${Date.now()}@example.invalid`;
   const question = `Как оформить счёт на артикул ${sku}?`;
   await page.goto(base);
+  await page.screenshot({ path: resolve(output, "home.png"), fullPage: true });
+  await page.getByRole("link", { name: /Я клиент.*Открыть чат/ }).click();
   await page.locator("#query").fill(sku);
   await page.locator("#search-form button").click();
   const card = page.locator("#search-products article").filter({ hasText: sku }).first();
@@ -38,10 +41,18 @@ try {
   await page.locator("#chat-form button").click();
   const chat = await (await response).json();
   assert.ok(chat.answer);
+  await page.getByRole("list", { name: "Действия помощника" }).waitFor();
+  await page.screenshot({ path: resolve(output, "client.png"), fullPage: true });
   await page.locator("#escalate").click();
   await page.locator("#contact").fill(contact);
   await page.locator("#lead-form button").click();
-  await page.getByText(/передана менеджеру на разбор/).waitFor();
+  const receipt = page.getByText(/передана менеджеру на разбор/);
+  await receipt.waitFor();
+  const leadId = (await receipt.textContent()).match(/[a-f0-9]{32}/)[0];
+  await page.getByRole("tab", { name: "Мои заявки" }).click();
+  const ownLead = page.locator("#my-lead-list details").filter({ hasText: question });
+  await ownLead.locator("summary").click();
+  await ownLead.getByText("ИИ-помощник", { exact: true }).waitFor();
   console.log("1/4 Обращение передано менеджеру");
 
   await page.getByRole("link", { name: "Менеджер" }).click();
@@ -50,6 +61,12 @@ try {
   const lead = page.locator("#lead-list article").filter({ hasText: contact });
   await lead.getByText(/Эскалация/).waitFor();
   await lead.getByRole("button", { name: "Подготовить КП" }).click();
+  await page.locator("#lead-history").getByText("ИИ-помощник", { exact: true }).waitFor();
+  const managerAnswer = "Документы по вашему обращению доступны в этой вкладке.";
+  await page.locator("#lead-state").selectOption("answered");
+  await page.locator("#manager-reply").fill(managerAnswer);
+  await page.locator("#lead-update-form button").click();
+  await page.getByText("Изменения сохранены.").waitFor();
   await page.locator('[name="quantity"]').fill("2");
   const quoteWait = page.waitForResponse((res) => res.url().endsWith("/manager/quotes"));
   await page.getByRole("button", { name: "Сформировать КП" }).click();
@@ -74,8 +91,28 @@ try {
   await page.locator("#knowledge-form button").click();
   await page.getByText("Ответ подтверждён и сохранён.").waitFor();
   console.log("3/4 Ответ сохранён в базе знаний");
+  await page.screenshot({ path: resolve(output, "manager.png"), fullPage: true });
 
   await page.getByRole("link", { name: "Клиент" }).click();
+  await page.getByRole("tab", { name: "Мои заявки" }).click();
+  const reopened = page.locator("#my-lead-list details").filter({ hasText: question });
+  await reopened.locator("summary").click();
+  await reopened.getByText(managerAnswer).waitFor();
+  await reopened.getByText("Ответ отправлен").first().waitFor();
+  const clientDownload = page.waitForEvent("download");
+  await reopened.getByRole("link", { name: "Проект счёта PDF" }).click();
+  assert.match((await clientDownload).suggestedFilename(), /invoice-.*\.pdf$/);
+  await page.screenshot({ path: resolve(output, "my-leads.png"), fullPage: true });
+  const outsider = await browser.newPage();
+  await outsider.request.get(base + "/api/v1/client/leads");
+  for (const path of ["/client/leads/" + leadId, "/client/quotes/" + quote.id + "/invoice.pdf"]) {
+    assert.equal((await outsider.request.get(base + "/api/v1" + path)).status(), 404);
+  }
+  assert.equal((await outsider.request.patch(base + "/api/v1/manager/leads/" + leadId,
+    { data: { status: "closed" } })).status(), 401);
+  await outsider.close();
+  console.log("Доступ к заявке и счёту из другой сессии отклонён");
+  await page.getByRole("tab", { name: "Чат" }).click();
   await page.locator("#question").fill(topic);
   const follow = page.waitForResponse((res) => res.url().endsWith("/api/v1/chat"));
   await page.locator("#chat-form button").click();
@@ -84,6 +121,20 @@ try {
   assert.equal(reused.provider, "knowledge");
   assert.ok(reused.actions.some(({ type }) => type === "knowledge_confirmed"));
   console.log("4/4 Подтверждённый ответ найден");
+
+  const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await mobile.route("**/api/v1/products?*", (route) => route.fulfill({ json: { items: [{
+    sku: "SAFE-1", name: "Монитор &amp;quot;Офис&amp;quot;",
+    description: "&lt;img src=x onerror=alert(1)&gt;",
+    category: "Офис &amp; дом", url: "", price_minor: null, currency: "RUB",
+  }] } }));
+  await mobile.goto(base + "/client");
+  const previewCard = mobile.locator("#search-products article").first();
+  assert.equal(await previewCard.locator("h3").textContent(), 'Монитор "Офис"');
+  assert.match(await previewCard.textContent(), /<img src=x onerror=alert\(1\)>/);
+  assert.equal(await previewCard.locator("img").count(), 0);
+  assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth), 390);
+  await mobile.screenshot({ path: resolve(output, "mobile-client.png"), fullPage: true });
   console.log(`Готово за ${((Date.now() - started) / 1000).toFixed(1)} с`);
 } finally {
   clearTimeout(deadline);

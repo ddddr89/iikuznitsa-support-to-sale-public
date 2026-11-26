@@ -1,4 +1,4 @@
-import { byId, element, money, request, status } from "./common.js";
+import { byId, element, leadStatus, money, request, showHistory, status } from "./common.js";
 
 const pageSize = 10;
 let query = "";
@@ -6,8 +6,15 @@ let offset = 0;
 let escalation = false;
 let lastQuestion = "";
 const history = [];
+let session;
 const conversation = byId("conversation");
 const question = byId("question");
+for (const suggestion of document.querySelectorAll("[data-question]")) {
+  suggestion.addEventListener("click", () => {
+    question.value = suggestion.dataset.question;
+    question.focus();
+  });
+}
 
 const actionLabels = {
   catalog_search: "Поиск в каталоге",
@@ -27,6 +34,7 @@ function addMessage(text, customer = false) {
   const message = element("article", undefined, "message" + (customer ? " customer" : ""));
   message.append(element("strong", customer ? "Вы" : "Помощник"), element("p", text));
   conversation.append(message);
+  byId("chat-welcome").hidden = true;
   conversation.hidden = false;
   conversation.scrollTop = conversation.scrollHeight;
   return message;
@@ -85,7 +93,7 @@ function showProducts(container, products) {
       try {
         const url = new URL(product.url);
         if (["https:", "http:"].includes(url.protocol)) {
-          const link = element("a", "Карточка товара ↗");
+          const link = element("a", "Карточка товара");
           link.href = url.href;
           link.target = "_blank";
           link.rel = "noopener noreferrer";
@@ -162,8 +170,15 @@ function submit(id, statusId, pending, action) {
 submit("chat-form", "chat-status", "Ожидаем ответ сервера…", async () => {
   const message = question.value.trim();
   if (!message) throw new Error("Опишите задачу.");
+  await startSession();
   addMessage(message, true);
-  const result = await request("/chat", { body: { message, history: history.slice(-4) } });
+  conversation.setAttribute("aria-busy", "true");
+  let result;
+  try {
+    result = await request("/chat", { body: { message, history: history.slice(-4) } });
+  } finally {
+    conversation.removeAttribute("aria-busy");
+  }
   history.push({ question: message, answer: result.answer });
   if (history.length > 4) history.shift();
   renderAnswer(result);
@@ -185,6 +200,7 @@ submit("lead-form", "lead-status", "Передаём заявку…", async (fo
   const message = byId("lead-message").value.trim();
   const sku = byId("sku").value.trim();
   if (!contact || !message) throw new Error("Укажите контакт и опишите задачу.");
+  await startSession();
   const lead = await request("/leads", { body: { contact, message, ...(sku ? { sku } : {}), ...(escalation ? { escalation } : {}) } });
   form.reset();
   escalation = false;
@@ -224,3 +240,76 @@ async function loadCatalogSource() {
 
 loadCatalogSource();
 search("", 0);
+
+function startSession() {
+  session ??= request("/client/leads").finally(() => {
+    session = null;
+  });
+  return session;
+}
+
+async function loadMyLeads() {
+  const list = byId("my-lead-list");
+  const refresh = byId("refresh-my-leads");
+  refresh.disabled = true;
+  status("my-leads-status", "Загружаем заявки…");
+  try {
+    const { items } = await startSession();
+    list.replaceChildren(...items.map((lead) => {
+      const card = element("details", undefined, "card lead-detail");
+      const summary = element("summary");
+      summary.append(element("strong", lead.message), element("span", leadStatus(lead.status), "status-chip"));
+      const content = element("div", undefined, "lead-content");
+      card.append(summary, content);
+      card.addEventListener("toggle", async () => {
+        if (!card.open) return;
+        content.replaceChildren(element("p", "Загружаем историю…", "meta"));
+        try {
+          const detail = await request("/client/leads/" + encodeURIComponent(lead.id));
+          const history = element("div", undefined, "timeline");
+          showHistory(history, detail);
+          content.replaceChildren(history);
+          for (const document of detail.documents) {
+            const row = element("div", undefined, "document-row");
+            row.append(element("span", money(document.total_minor, "RUB")));
+            for (const [kind, name] of [["quote", "КП PDF"], ["invoice", "Проект счёта PDF"]]) {
+              const link = element("a", name);
+              link.href = "/api/v1/client/quotes/" + encodeURIComponent(document.id) + "/" + kind + ".pdf";
+              row.append(link);
+            }
+            content.append(row);
+          }
+        } catch (error) {
+          content.replaceChildren(element("p", error.message, "status error"));
+        }
+      });
+      return card;
+    }));
+    status("my-leads-status", items.length ? "" : "В этой сессии ещё нет заявок.");
+  } catch (error) {
+    status("my-leads-status", error.message, true);
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+byId("refresh-my-leads").addEventListener("click", loadMyLeads);
+const tabs = [byId("chat-tab"), byId("leads-tab")];
+for (const [index, tab] of tabs.entries()) {
+  tab.addEventListener("click", () => {
+    for (const item of tabs) {
+      const active = item === tab;
+      item.setAttribute("aria-selected", active);
+      item.tabIndex = active ? 0 : -1;
+      byId(item.getAttribute("aria-controls")).hidden = !active;
+    }
+    if (index === 1) loadMyLeads();
+  });
+  tab.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[1] : tabs[1 - index];
+    next.focus();
+    next.click();
+  });
+}

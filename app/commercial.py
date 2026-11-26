@@ -42,17 +42,44 @@ class Commercial:
                 db.execute("ALTER TABLE leads ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
             db.execute("CREATE INDEX IF NOT EXISTS leads_recent ON leads(created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS quotes_by_lead ON quotes(lead_id)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS lead_sessions (
+                    lead_id TEXT PRIMARY KEY REFERENCES leads(id), owner TEXT NOT NULL
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS lead_sessions_owner ON lead_sessions(owner)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS demo_sessions (
+                    owner TEXT PRIMARY KEY, expires_at TEXT NOT NULL
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS demo_sessions_expiry ON demo_sessions(expires_at)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS session_turns (
+                    id INTEGER PRIMARY KEY, owner TEXT NOT NULL,
+                    question TEXT NOT NULL, answer TEXT NOT NULL, created_at TEXT NOT NULL
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS session_turns_owner ON session_turns(owner, id)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS lead_activity (
+                    id INTEGER PRIMARY KEY, lead_id TEXT NOT NULL REFERENCES leads(id),
+                    role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
+                )
+            """)
+            db.execute("CREATE INDEX IF NOT EXISTS lead_activity_by_lead ON lead_activity(lead_id, id)")
 
-    def create_lead(self, contact, message, sku=None, escalation=False):
+    def create_lead(self, contact, message, sku=None, escalation=False, owner=None):
         now = datetime.now(timezone.utc)
         lead = dict(id=uuid4().hex, contact=contact, message=message, sku=sku,
                     created_at=now.isoformat(), status="escalated" if escalation else "new")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute("""
-                SELECT * FROM leads WHERE contact = ? AND message = ? AND sku IS ?
+                SELECT leads.* FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                WHERE contact = ? AND message = ? AND sku IS ? AND lead_sessions.owner IS ?
                 AND created_at >= ? ORDER BY created_at DESC LIMIT 1
-            """, (contact, message, sku, (now - timedelta(minutes=10)).isoformat())).fetchone()
+            """, (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat())).fetchone()
             if previous:
                 lead = dict(previous)
                 if escalation and lead["status"] == "new":
@@ -63,7 +90,93 @@ class Commercial:
                 "INSERT INTO leads VALUES (:id, :contact, :message, :sku, :created_at, :status)",
                 lead,
             )
+            if owner:
+                db.execute("INSERT INTO lead_sessions VALUES (?, ?)", (lead["id"], owner))
+                turns = db.execute("""
+                    SELECT question, answer, created_at FROM session_turns WHERE owner = ? ORDER BY id
+                """, (owner,))
+                for turn in turns:
+                    db.executemany("""
+                        INSERT INTO lead_activity (lead_id, role, content, created_at) VALUES (?, ?, ?, ?)
+                    """, [(lead["id"], role, turn[field], turn["created_at"])
+                          for role, field in (("client", "question"), ("assistant", "answer"))])
         return {**lead, "duplicate": False}
+
+    def create_session(self, owner, lifetime):
+        now = datetime.now(timezone.utc)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""
+                DELETE FROM session_turns WHERE owner IN (
+                    SELECT owner FROM demo_sessions WHERE expires_at <= ?
+                )
+            """, (now.isoformat(),))
+            db.execute("DELETE FROM demo_sessions WHERE expires_at <= ?", (now.isoformat(),))
+            db.execute("INSERT INTO demo_sessions VALUES (?, ?)",
+                       (owner, (now + timedelta(seconds=lifetime)).isoformat()))
+
+    def active_session(self, owner):
+        with self.connection() as db:
+            return db.execute("""
+                SELECT 1 FROM demo_sessions WHERE owner = ? AND expires_at > ?
+            """, (owner, datetime.now(timezone.utc).isoformat())).fetchone() is not None
+
+    def record_turn(self, owner, question, answer):
+        with self.connection() as db:
+            db.execute("""
+                INSERT INTO session_turns (owner, question, answer, created_at) VALUES (?, ?, ?, ?)
+            """, (owner, question, answer, datetime.now(timezone.utc).isoformat()))
+            db.execute("""
+                DELETE FROM session_turns WHERE owner = ? AND id NOT IN (
+                    SELECT id FROM session_turns WHERE owner = ? ORDER BY id DESC LIMIT 12
+                )
+            """, (owner, owner))
+
+    def client_leads(self, owner):
+        with self.connection() as db:
+            return [dict(row) for row in db.execute("""
+                SELECT leads.id, leads.message, leads.sku, leads.created_at, leads.status
+                FROM leads JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                WHERE lead_sessions.owner = ? ORDER BY leads.created_at DESC LIMIT 100
+            """, (owner,))]
+
+    def lead_detail(self, lead_id, owner=None):
+        with self.connection() as db:
+            db.execute("BEGIN")
+            row = db.execute("""
+                SELECT leads.* FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                WHERE leads.id = ? AND (? IS NULL OR lead_sessions.owner = ?)
+            """, (lead_id, owner, owner)).fetchone()
+            if row is None:
+                raise KeyError(lead_id)
+            lead = dict(row)
+            lead["history"] = [dict(item) for item in db.execute("""
+                SELECT role, content, created_at FROM lead_activity WHERE lead_id = ? ORDER BY id
+            """, (lead_id,))]
+            lead["documents"] = [dict(item) for item in db.execute("""
+                SELECT id, total_minor FROM quotes WHERE lead_id = ? ORDER BY rowid DESC
+            """, (lead_id,))]
+        if owner is not None:
+            lead.pop("contact")
+        return lead
+
+    def update_lead(self, lead_id, status=None, answer=None):
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            lead = db.execute("SELECT status FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            if lead is None:
+                raise KeyError(lead_id)
+            if status is not None and status != lead["status"]:
+                db.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
+                db.execute("""
+                    INSERT INTO lead_activity (lead_id, role, content, created_at) VALUES (?, 'status', ?, ?)
+                """, (lead_id, status, now))
+            if answer:
+                db.execute("""
+                    INSERT INTO lead_activity (lead_id, role, content, created_at) VALUES (?, 'manager', ?, ?)
+                """, (lead_id, answer, now))
+        return self.lead_detail(lead_id)
 
     def get_lead(self, lead_id):
         with self.connection() as db:
@@ -95,12 +208,14 @@ class Commercial:
                        (quote_id, lead_id, snapshot, total))
         return dict(id=quote_id, total_minor=total, currency="RUB")
 
-    def get_quote(self, quote_id):
+    def get_quote(self, quote_id, owner=None):
         with self.connection() as db:
             quote = db.execute("""
                 SELECT quotes.*, leads.contact FROM quotes
-                JOIN leads ON leads.id = quotes.lead_id WHERE quotes.id = ?
-            """, (quote_id,)).fetchone()
+                JOIN leads ON leads.id = quotes.lead_id
+                LEFT JOIN lead_sessions ON lead_sessions.lead_id = leads.id
+                WHERE quotes.id = ? AND (? IS NULL OR lead_sessions.owner = ?)
+            """, (quote_id, owner, owner)).fetchone()
         if quote is None:
             raise KeyError(quote_id)
 

@@ -31,9 +31,26 @@ export async function request(path, { body, token, download = false, method } = 
   return download ? response.blob() : response.json();
 }
 
+const entities = /&(?:#[0-9]{1,8}|#x[0-9a-f]{1,8}|[a-z][a-z0-9]{1,31});/gi;
+const entityDecoder = document.createElement("textarea");
+
+export function displayText(value) {
+  let decoded = String(value);
+  for (let pass = 0; pass < 2; pass++) {
+    const next = decoded.replace(entities, (entity) => {
+      // This assignment receives only one entity token, never arbitrary markup.
+      entityDecoder.innerHTML = entity;
+      return entityDecoder.value;
+    });
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
 export function element(tag, content, className) {
   const node = document.createElement(tag);
-  if (content !== undefined) node.textContent = content;
+  if (content !== undefined) node.textContent = displayText(content);
   if (className) node.className = className;
   return node;
 }
@@ -46,4 +63,34 @@ export function status(id, message, error = false) {
 
 export function money(minor, currency) {
   return new Intl.NumberFormat("ru-RU", { style: "currency", currency }).format(minor / 100);
+}
+
+const leadStatuses = {
+  new: "Новое",
+  escalated: "Передано менеджеру",
+  in_progress: "В работе",
+  answered: "Ответ отправлен",
+  closed: "Обращение закрыто",
+};
+
+export function leadStatus(value) {
+  return Object.hasOwn(leadStatuses, value) ? leadStatuses[value] : "Статус неизвестен";
+}
+
+export function showHistory(container, lead) {
+  const roles = { request: "Обращение", client: "Клиент", assistant: "ИИ-помощник",
+    manager: "Менеджер", status: "Изменение статуса" };
+  const history = [...lead.history];
+  if (!history.some((item) => item.role === "client" && item.content === lead.message)) {
+    history.push({ role: "request", content: lead.message, created_at: lead.created_at });
+    history.sort((left, right) => left.created_at.localeCompare(right.created_at));
+  }
+  container.replaceChildren(...history.map(({ role, content, created_at }) => {
+    const entry = element("article", undefined, "history-entry");
+    const time = new Date(created_at);
+    entry.append(element("strong", roles[role]));
+    if (!Number.isNaN(time.valueOf())) entry.append(element("span", time.toLocaleString("ru-RU"), "meta"));
+    entry.append(element("p", role === "status" ? leadStatus(content) : content));
+    return entry;
+  }));
 }

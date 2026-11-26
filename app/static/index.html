@@ -3,62 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Подбор ИТ-решений · Support-to-Sale</title>
+  <meta name="description" content="Подбор ИТ-решений по каталогу Софтлайн и работа с заявками.">
+  <title>Support-to-Sale · Софтлайн Решения</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script type="module" src="/static/client.js"></script>
 </head>
-<body>
-<header>
+<body class="landing">
+<header class="site-header">
   <div class="shell nav">
-    <a class="brand" href="/">Support<span>–</span>to<span>–</span>Sale</a>
-    <nav class="roles" aria-label="Переключение роли">
-      <a href="/" aria-current="page">Клиент</a>
-      <a href="/manager">Менеджер</a>
-    </nav>
+    <a class="brand" href="/" aria-label="Софтлайн Решения, главная">
+      <img src="/static/softline-logo.png" width="176" height="39" alt="Софтлайн Решения SOFL">
+    </a>
+    <span class="product-name">ИИ-помощник</span>
+    <span class="prototype">Конкурсный прототип</span>
   </div>
 </header>
-<main class="shell">
-  <div class="intro"><h1>Подберите ИТ-решение</h1><p>Опишите задачу помощнику или найдите нужный товар в каталоге.</p></div>
-  <div class="columns">
-    <section class="panel" aria-labelledby="assistant">
-      <h2 id="assistant">Помощник</h2>
-      <div id="conversation" class="conversation" role="log" aria-label="Диалог с помощником" hidden></div>
-      <form id="chat-form">
-        <label for="question">Что нужно подобрать?</label>
-        <textarea id="question" rows="4" maxlength="2000" required placeholder="Например, нужны ноутбуки для офиса"></textarea>
-        <button>Спросить помощника</button>
-      </form>
-      <p id="chat-status" class="status" role="status"></p>
-      <button type="button" class="secondary" id="escalate" hidden>Позвать менеджера</button>
-    </section>
-    <section class="panel" aria-labelledby="catalog">
-      <h2 id="catalog">Каталог</h2>
-      <p id="catalog-source" class="meta" hidden></p>
-      <form id="search-form">
-        <label for="query">Название, категория или артикул</label>
-        <div class="row"><input id="query" type="search" maxlength="200" placeholder="Поиск по каталогу"><button>Найти</button></div>
-      </form>
-      <p id="search-status" class="status" role="status"></p>
-      <div id="search-products" class="cards"></div>
-      <nav class="row pagination" aria-label="Страницы каталога">
-        <button type="button" id="previous" class="secondary" disabled>Назад</button>
-        <button type="button" id="next" class="secondary" disabled>Далее</button>
-      </nav>
-    </section>
-  </div>
-  <section class="panel request" aria-labelledby="request">
-    <h2 id="request">Оставить заявку</h2>
-    <form id="lead-form">
-      <label for="contact">Электронная почта или телефон</label>
-      <input id="contact" maxlength="320" required>
-      <label for="sku">Артикул товара <span class="optional">(необязательно)</span></label>
-      <input id="sku" maxlength="200">
-      <label for="lead-message">Что нужно уточнить?</label>
-      <textarea id="lead-message" rows="3" maxlength="2000" required></textarea>
-      <button>Передать менеджеру</button>
-    </form>
-    <p id="lead-status" class="status" role="status"></p>
+<main class="shell landing-main">
+  <section class="hero" aria-labelledby="welcome">
+    <div class="hero-content">
+      <h1 id="welcome">Подбор ИТ‑решений<br>и работа с заявками</h1>
+      <p>Найдите нужный продукт в каталоге Софтлайн или подготовьте коммерческое предложение по заявке.</p>
+    </div>
+    <div class="hero-art" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  </section>
+  <section class="role-grid" aria-label="Выбор роли">
+    <a class="role-card client-role" href="/client">
+      <span class="role-icon customer-icon" aria-hidden="true"></span>
+      <h2>Я клиент</h2>
+      <p>Спросите помощника, сравните товары и передайте запрос менеджеру.</p>
+      <span class="button">Открыть чат</span>
+    </a>
+    <a class="role-card manager-role" href="/manager">
+      <span class="role-icon manager-icon" aria-hidden="true"></span>
+      <h2>Я менеджер</h2>
+      <p>Обработайте заявку, сформируйте КП и счёт, сохраните проверенный ответ.</p>
+      <span class="button secondary">Войти в кабинет</span>
+    </a>
   </section>
 </main>
+<footer class="site-footer">
+  <div class="shell"><img src="/static/softline-logo-white.png" width="145" height="32" alt="Софтлайн Решения SOFL"></div>
+</footer>
 </body>
 </html>
