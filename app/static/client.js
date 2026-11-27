@@ -8,6 +8,8 @@ let escalation = false;
 let lastQuestion = "";
 const history = [];
 let session;
+let managerCursor = 0;
+let pollingManager = false;
 const conversation = byId("conversation");
 const question = byId("question");
 const catalogResults = byId("search-products");
@@ -19,9 +21,9 @@ for (const suggestion of document.querySelectorAll("[data-question]")) {
   });
 }
 
-function addMessage(text, customer = false) {
+function addMessage(text, customer = false, author = "Помощник") {
   const message = element("article", undefined, "message" + (customer ? " customer" : ""));
-  message.append(element("strong", customer ? "Вы" : "Помощник"), element("p", text));
+  message.append(element("strong", customer ? "Вы" : author), element("p", text));
   conversation.append(message);
   byId("chat-welcome").hidden = true;
   conversation.hidden = false;
@@ -47,8 +49,9 @@ function renderAnswer(result, intent) {
     }
   }
   const products = element("div", undefined, "cards");
-  showProducts(products, result.products);
+  showProducts(products, result.products, true);
   if (products.children.length) answer.append(products);
+  if (result.escalation?.id) byId("open-my-leads").hidden = false;
   if (intent === catalogIntent) {
     query = "";
     offset = 0;
@@ -62,7 +65,7 @@ function renderAnswer(result, intent) {
   conversation.scrollTop = answer.offsetTop - conversation.offsetTop;
 }
 
-function showProducts(container, products) {
+function showProducts(container, products, offerDocuments = false) {
   const cards = products.map((product) => {
     const card = element("article", undefined, "card");
     card.append(element("h3", product.name));
@@ -84,10 +87,14 @@ function showProducts(container, products) {
         // The product remains selectable when the source URL is absent or malformed.
       }
     }
-    const select = element("button", "В заявку", "secondary");
+    const documents = offerDocuments && product.price_minor !== null;
+    const select = element("button", documents ? "Запросить документы" : "В заявку", "secondary");
     select.type = "button";
     select.addEventListener("click", () => {
+      escalation = false;
       byId("sku").value = product.sku;
+      byId("request").textContent = documents ? "Запросить КП и проект счёта" : "Оставить заявку";
+      if (documents) byId("lead-message").value = "Прошу подготовить КП и проект счёта на товар " + product.sku + ".";
       openHandoff();
       byId("contact").focus();
     });
@@ -233,7 +240,7 @@ submit("lead-form", "lead-status", "Передаём заявку…", async (fo
   form.reset();
   escalation = false;
   byId("request").textContent = "Оставить заявку";
-  const result = lead.status === "escalated" ? " передана менеджеру на разбор." : " принята.";
+  const result = lead.status === "escalated" ? " ожидает ответа менеджера." : " принята.";
   const duplicate = lead.duplicate ? " Используем ранее созданную заявку." : "";
   status("lead-status", "Заявка № " + lead.id + result + duplicate);
   byId("open-my-leads").hidden = false;
@@ -271,17 +278,52 @@ loadCatalogSource();
 
 async function restoreChat() {
   try {
-    const { items } = await request("/client/chat-history");
-    for (const item of items) {
-      addMessage(item.question, true);
-      addMessage(item.answer);
-    }
-    history.push(...items.slice(-4));
+    const { items } = await request("/client/chat-history?include_times=true");
+    history.push(...items.slice(-4).map(({ question, answer }) => ({ question, answer })));
     if (items.length) lastQuestion = items.at(-1).question;
+    const timeline = items.flatMap(({ question, answer, created_at }) => [
+      { text: question, customer: true, created_at }, { text: answer, created_at },
+    ]);
+    try {
+      const replies = await readManagerMessages();
+      timeline.push(...replies.map(({ content, created_at }) => ({
+        text: content, author: "Менеджер", created_at,
+      })));
+    } catch {
+      // Replies will be retried by polling without blocking chat history.
+    }
+    timeline.sort((first, second) => first.created_at.localeCompare(second.created_at));
+    for (const entry of timeline) addMessage(entry.text, entry.customer, entry.author);
   } catch {
     // A temporarily unavailable history should not block a new conversation.
   }
 }
+
+async function readManagerMessages() {
+  const { items } = await request("/client/manager-messages?after=" + managerCursor);
+  if (items.length) managerCursor = items.at(-1).id;
+  return items;
+}
+
+async function refreshManagerMessages() {
+  if (document.hidden || pollingManager) return;
+  pollingManager = true;
+  try {
+    await restoredChat;
+    let batch;
+    do {
+      batch = await readManagerMessages();
+      for (const item of batch) addMessage(item.content, false, "Менеджер");
+    } while (batch.length === 100);
+  } catch {
+    // Another refresh will retry after a temporary error.
+  } finally {
+    pollingManager = false;
+  }
+}
+
+setInterval(refreshManagerMessages, 8000);
+document.addEventListener("visibilitychange", refreshManagerMessages);
 
 function startSession() {
   session ??= request("/client/leads").finally(() => {

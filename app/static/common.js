@@ -66,8 +66,8 @@ export function money(minor, currency) {
 }
 
 const leadStatuses = {
-  new: "Новое",
-  escalated: "Передано менеджеру",
+  new: "Заявка на оформление",
+  escalated: "Ожидает ответа менеджера",
   in_progress: "В работе",
   answered: "Ответ отправлен",
   closed: "Обращение закрыто",

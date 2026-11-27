@@ -75,7 +75,7 @@ try {
   await page.locator("#escalate").click();
   await page.locator("#contact").fill(contact);
   await page.locator("#lead-form button").click();
-  const receipt = page.getByText(/передана менеджеру на разбор/);
+  const receipt = page.getByText(/ожидает ответа менеджера/);
   await receipt.waitFor();
   const leadId = (await receipt.textContent()).match(/[a-f0-9]{32}/)[0];
   await page.getByRole("tab", { name: "Мои заявки" }).click();
@@ -89,8 +89,8 @@ try {
   await page.locator("#token").fill(token);
   await page.locator("#access-form button").click();
   const lead = page.locator("#lead-list article").filter({ hasText: contact });
-  await lead.getByText(/Эскалация/).waitFor();
-  await lead.getByRole("button", { name: "Подготовить КП" }).click();
+  await lead.getByText(/Ожидает ответа менеджера/).waitFor();
+  await lead.getByRole("button", { name: "Открыть заявку" }).click();
   await page.locator("#lead-history").getByText("ИИ-помощник", { exact: true }).last().waitFor();
   const managerAnswer = "Документы по вашему обращению доступны в этой вкладке.";
   await page.locator("#lead-state").selectOption("answered");
@@ -99,7 +99,7 @@ try {
   await page.getByText("Изменения сохранены.").waitFor();
   await page.locator('[name="quantity"]').fill("2");
   const quoteWait = page.waitForResponse((res) => res.url().endsWith("/manager/quotes"));
-  await page.getByRole("button", { name: "Сформировать КП" }).click();
+  await page.getByRole("button", { name: "Подготовить документы" }).click();
   const quote = await (await quoteWait).json();
   assert.ok(quote.total_minor > 0);
   const downloadWait = page.waitForEvent("download");

@@ -68,18 +68,20 @@ add.addEventListener("click", () => {
 });
 quoteForm.addEventListener("input", clearQuote);
 
-function showLeads(leads = queue) {
+function showLeads(leads = queue, waitingCount) {
   queue = leads;
+  if (waitingCount !== undefined) byId("waiting-count").textContent = `Ожидают ответа: ${waitingCount}`;
   const visible = queue.filter((lead) => leadFilter.value === "all" ||
     (lead.status === "closed") === (leadFilter.value === "closed"));
   const cards = visible.map((lead) => {
-    const card = element("article", undefined, "card");
+    const waiting = lead.status === "escalated";
+    const card = element("article", undefined, waiting ? "card waiting-lead" : "card");
     const date = new Date(lead.created_at);
-    const metadata = [lead.status === "escalated" ? "Эскалация" : leadStatus(lead.status), lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
+    const metadata = [leadStatus(lead.status), lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
     card.append(element("h3", "Заявка № " + lead.id));
     card.append(element("p", metadata.filter(Boolean).join(" · "), "meta"));
     card.append(element("p", lead.contact), element("p", lead.message));
-    const choose = element("button", "Подготовить КП", "secondary");
+    const choose = element("button", "Открыть заявку", "secondary");
     choose.type = "button";
     choose.addEventListener("click", () => {
       selected = lead;
@@ -147,11 +149,11 @@ accessForm.addEventListener("submit", async (event) => {
   button.disabled = true;
   status("access-status", "Проверяем доступ и загружаем заявки…");
   try {
-    const { items: leads } = await request("/manager/leads", { token: entered });
+    const { items: leads, waiting_count: waiting } = await request("/manager/leads", { token: entered });
     session += 1;
     token = entered;
     accessForm.reset();
-    showLeads(leads);
+    showLeads(leads, waiting);
     showSession(true);
     status("access-status", "Заявок загружено: " + leads.length);
     refresh.focus();
@@ -167,9 +169,9 @@ refresh.addEventListener("click", async () => {
   refresh.disabled = true;
   status("access-status", "Обновляем заявки…");
   try {
-    const { items: leads } = await request("/manager/leads", { token });
+    const { items: leads, waiting_count: waiting } = await request("/manager/leads", { token });
     if (currentSession !== session) return;
-    showLeads(leads);
+    showLeads(leads, waiting);
     if (selected && !leads.some((lead) => lead.id === selected.id)) resetSelection();
     status("access-status", "Заявок загружено: " + leads.length);
   } catch (error) {
@@ -196,12 +198,12 @@ quoteForm.addEventListener("submit", async (event) => {
   }
   const fields = quoteForm.querySelectorAll("input, button");
   fields.forEach((field) => field.disabled = true);
-  status("quote-status", "Формируем КП…");
+  status("quote-status", "Формируем КП и проект счёта…");
   try {
     const result = await request("/manager/quotes", { token, body: { lead_id: currentSelection.id, items: rows } });
     if (selected !== currentSelection || currentSession !== session) return;
     quote = result;
-    status("quote-status", "КП № " + quote.id + " · " + money(quote.total_minor, quote.currency));
+    status("quote-status", "Документы № " + quote.id + " · " + money(quote.total_minor, quote.currency));
     download.hidden = !(quote.quote_pdf_url || quote.download_url);
     download.textContent = quote.quote_pdf_url ? "Скачать КП PDF" : "Скачать КП";
     invoice.hidden = !quote.invoice_pdf_url;
@@ -336,8 +338,8 @@ leadUpdateForm.addEventListener("submit", async (event) => {
     byId("manager-reply").value = "";
     status("lead-update-status", "Изменения сохранены.");
     try {
-      const { items } = await request("/manager/leads", { token });
-      if (currentSession === session && selected === lead) showLeads(items);
+      const { items, waiting_count: waiting } = await request("/manager/leads", { token });
+      if (currentSession === session) showLeads(items, waiting);
     } catch {
       // The updated detail remains available when list refresh fails.
     }

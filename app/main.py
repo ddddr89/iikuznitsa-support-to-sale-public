@@ -33,6 +33,31 @@ SESSION_LIFETIME = 7 * 86400
 LeadStatus = Literal["new", "escalated", "in_progress", "answered", "closed"]
 
 
+OPERATOR_REQUEST = re.compile(
+    r"(?<!не )\b(?:позовите|позови|подключите|подключи|соедините|свяжите|переведите|"
+    r"передайте|поговорить|нужен|нужна|хочу)\b"
+    r"[^.!?]{0,60}\b(?:оператор\w*|менеджер\w*|человек\w*)\b|"
+    r"^\s*(?:оператор|менеджер)(?:а)?[.!?\s]*$",
+    re.IGNORECASE,
+)
+UNRESOLVED_CATALOG = (
+    "В каталоге не нашлось товаров",
+    "Не нашлось ноутбука",
+    "Подтверждённого предложения",
+    "В каталоге не удалось подтвердить",
+    "В каталоге нет подтверждённого совпадения",
+    "Не удалось подтвердить все параметры",
+    "Каталог не подтверждает одновременно",
+    "Подтверждённую поставку лицензии в каталоге найти не удалось",
+)
+SYSTEM_CONTACT = "Контакт не указан · ответ в чате"
+
+
+def render_documents(quote, kind):
+    lines = [{**item, "name": unescape(unescape(item["name"]))} for item in quote["items"]]
+    return render_pdf({**quote, "items": lines}, kind)
+
+
 def recommended_products(catalog, candidates, answer):
     skus = list(dict.fromkeys(item["sku"] for item in candidates))
     current = catalog.get_many(skus)
@@ -185,13 +210,16 @@ def create_app(db_path=None):
         earlier = "\n".join(item.question for item in reversed(body.history))
         scope = product_scope(body.message, earlier)
         context = f"{earlier}\n{body.message}"
+        operator_requested = bool(OPERATOR_REQUEST.search(body.message))
         guidance = advisory(body.message, context)
         resources = knowledge.search(body.message)
         confirmed = resources[0] if resources and resources[0].get("kind") == "manager_confirmed" else None
         sources = []
         products = []
         searched = False
-        if confirmed and confirmed["title"].casefold() == body.message.casefold():
+        if operator_requested:
+            result = {"answer": "Ответ менеджера появится в этом чате.", "provider": "catalog", "actions": []}
+        elif confirmed and confirmed["title"].casefold() == body.message.casefold():
             result = {"answer": confirmed["excerpt"], "provider": "knowledge", "actions": []}
             if confirmed.get("url"):
                 sources = [{"title": confirmed["title"], "url": confirmed["url"]}]
@@ -228,17 +256,29 @@ def create_app(db_path=None):
             action["status"] == "error" and action["type"] in {"route_n8n", "model_yandex"}
             for action in result["actions"]
         )
-        if model_unavailable:
-            result["answer"] += "\n\nВопрос сохранён и передан менеджеру."
+        answer = result["answer"]
+        model_handoff = result["provider"] in {"yandex", "openai"} and bool(re.search(
+            r"(?:не удалось (?:подтвердить|найти)|недостаточно (?:данных|информации)|"
+            r"нет (?:информации|подходящ\w* (?:позици|решени|товар)\w*))", answer, re.IGNORECASE,
+        )) and bool(re.search(r"менеджер\w*", answer, re.IGNORECASE))
+        needs_manager = operator_requested or model_handoff or (
+            result["provider"] == "catalog" and any(text in answer for text in UNRESOLVED_CATALOG)
+        )
+        should_escalate = model_unavailable or (owner is not None and needs_manager)
+        if should_escalate:
+            result["answer"] += "\n\nСтатус обращения: ожидает ответа менеджера."
+        elif operator_requested:
+            result["answer"] = "Откройте форму «Позвать менеджера», чтобы отправить обращение."
         if owner:
             commercial.record_turn(owner, body.message, result["answer"])
         if confirmed:
             actions.append({"type": "knowledge_confirmed", "status": "done"})
-        if model_unavailable:
-            lead = commercial.create_lead(
-                "Контакт не указан · обращение из чата", body.message,
-                escalation=True, owner=owner,
-            )
+        if should_escalate:
+            subject = body.message
+            if operator_requested:
+                subject = next((turn.question for turn in reversed(body.history)
+                                if not OPERATOR_REQUEST.search(turn.question)), subject)
+            lead = commercial.create_lead(SYSTEM_CONTACT, subject, escalation=True, owner=owner)
             result["escalation"] = {"status": lead["status"]}
             if owner:
                 result["escalation"]["id"] = lead["id"]
@@ -277,9 +317,14 @@ def create_app(db_path=None):
         return {"items": commercial.client_leads(owner)}
 
     @api.get("/api/v1/client/chat-history")
-    def client_chat_history(request: Request):
+    def client_chat_history(request: Request, include_times: bool = False):
         owner = session_owner(request)
-        return {"items": commercial.chat_history(owner) if owner else []}
+        return {"items": commercial.chat_history(owner, include_times) if owner else []}
+
+    @api.get("/api/v1/client/manager-messages")
+    def manager_messages(request: Request, after: int = Query(0, ge=0, le=2**63-1)):
+        owner = session_owner(request)
+        return {"items": commercial.manager_messages(owner, after) if owner else []}
 
     @api.get("/api/v1/client/leads/{lead_id}")
     def client_lead(lead_id: str, owner: Annotated[str, Depends(require_session)]):
@@ -295,7 +340,7 @@ def create_app(db_path=None):
 
     @api.get("/api/v1/manager/leads", dependencies=[Depends(require_manager)])
     def leads():
-        return {"items": commercial.list_leads()}
+        return commercial.lead_queue()
 
     @api.get("/api/v1/manager/leads/{lead_id}", dependencies=[Depends(require_manager)])
     def manager_lead(lead_id: str):
@@ -343,7 +388,7 @@ def create_app(db_path=None):
             items.append(dict(sku=line.sku, name=product["name"], quantity=line.quantity,
                               price_minor=product["price_minor"]))
         try:
-            quote = commercial.create_quote(body.lead_id, items)
+            quote = commercial.create_quote(body.lead_id, items, render_documents)
         except KeyError as exc:
             raise HTTPException(404, "Заявка не найдена") from exc
         base = f'/api/v1/manager/quotes/{quote["id"]}'
@@ -368,11 +413,12 @@ def create_app(db_path=None):
     def pdf_response(quote_id, kind, owner=None):
         try:
             quote = commercial.get_quote(quote_id, owner)
-            for item in quote["items"]:
-                item["name"] = unescape(unescape(item["name"]))
         except KeyError as exc:
             raise HTTPException(404, "КП не найдено") from exc
-        return Response(render_pdf(quote, kind), media_type="application/pdf", headers={
+        content = commercial.quote_pdf(quote_id, kind)
+        if content is None:
+            content = render_documents(quote, kind)
+        return Response(content, media_type="application/pdf", headers={
             "Content-Disposition": f'attachment; filename="{kind}-{quote["id"]}.pdf"',
             "Cache-Control": "no-store",
         })

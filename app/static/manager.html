@@ -37,6 +37,7 @@
   <div class="columns manager-layout" id="workspace" hidden>
     <section class="panel" aria-labelledby="leads">
       <h2 id="leads">Входящие заявки</h2>
+      <p id="waiting-count" class="status-chip" role="status"></p>
       <label for="lead-filter">Показывать заявки</label>
       <select id="lead-filter">
         <option value="open">Открытые</option>
@@ -54,8 +55,8 @@
         <form id="lead-update-form">
           <label for="lead-state">Статус обращения</label>
           <select id="lead-state">
-            <option value="new">Новое</option>
-            <option value="escalated">Передано менеджеру</option>
+            <option value="new">Заявка на оформление</option>
+            <option value="escalated">Ожидает ответа менеджера</option>
             <option value="in_progress">В работе</option>
             <option value="answered">Ответ отправлен</option>
             <option value="closed">Обращение закрыто</option>
@@ -67,17 +68,18 @@
         <p id="lead-update-status" class="status" role="status"></p>
       </section>
       <form id="quote-form" hidden>
-        <h3>Коммерческое предложение</h3>
+        <h3>КП и проект счёта</h3>
+        <p class="meta">Проект счёта не предназначен для оплаты. Для выставления нужны подтверждённые реквизиты продавца и покупателя.</p>
         <div id="quote-items" class="cards"></div>
         <div class="actions">
           <button id="add-item" class="secondary" type="button">Добавить позицию</button>
-          <button>Сформировать КП</button>
+          <button>Подготовить документы</button>
         </div>
       </form>
       <p id="quote-status" class="status" role="status"></p>
       <div id="downloads" class="actions" hidden>
         <button type="button" id="download" hidden>Скачать КП</button>
-        <button type="button" id="download-invoice" class="secondary" hidden>Скачать черновик счёта PDF</button>
+        <button type="button" id="download-invoice" class="secondary" hidden>Скачать проект счёта PDF</button>
       </div>
       <p id="download-status" class="status" role="status"></p>
       <section id="saved-documents" aria-labelledby="saved-documents-title" hidden>

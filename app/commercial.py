@@ -37,6 +37,12 @@ class Commercial:
                     items TEXT NOT NULL, total_minor INTEGER NOT NULL
                 )
             """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS quote_pdfs (
+                    quote_id TEXT PRIMARY KEY REFERENCES quotes(id),
+                    quote_pdf BLOB NOT NULL, invoice_pdf BLOB NOT NULL
+                )
+            """)
             fields = {field["name"] for field in db.execute("PRAGMA table_info(leads)")}
             if "status" not in fields:
                 db.execute("ALTER TABLE leads ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
@@ -78,8 +84,9 @@ class Commercial:
             previous = db.execute("""
                 SELECT leads.* FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
                 WHERE contact = ? AND message = ? AND sku IS ? AND lead_sessions.owner IS ?
-                AND created_at >= ? ORDER BY created_at DESC LIMIT 1
-            """, (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat())).fetchone()
+                AND created_at >= ? AND (NOT ? OR status IN ('new', 'escalated', 'in_progress'))
+                ORDER BY created_at DESC LIMIT 1
+            """, (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat(), escalation)).fetchone()
             if previous:
                 lead = dict(previous)
                 if escalation and lead["status"] == "new":
@@ -121,11 +128,15 @@ class Commercial:
                 SELECT 1 FROM demo_sessions WHERE owner = ? AND expires_at > ?
             """, (owner, datetime.now(timezone.utc).isoformat())).fetchone() is not None
 
-    def chat_history(self, owner):
+    def chat_history(self, owner, include_times=False):
         with self.connection() as db:
-            return [dict(row) for row in db.execute("""
-                SELECT question, answer FROM session_turns WHERE owner = ? ORDER BY id
+            turns = [dict(row) for row in db.execute("""
+                SELECT question, answer, created_at FROM session_turns WHERE owner = ? ORDER BY id
             """, (owner,))]
+        if not include_times:
+            for turn in turns:
+                turn.pop("created_at")
+        return turns
 
     def record_turn(self, owner, question, answer):
         with self.connection() as db:
@@ -137,6 +148,16 @@ class Commercial:
                     SELECT id FROM session_turns WHERE owner = ? ORDER BY id DESC LIMIT 12
                 )
             """, (owner, owner))
+
+    def manager_messages(self, owner, after):
+        with self.connection() as db:
+            return [dict(row) for row in db.execute("""
+                SELECT activity.id, activity.content, activity.created_at
+                FROM lead_activity AS activity
+                JOIN lead_sessions AS session ON session.lead_id = activity.lead_id
+                WHERE session.owner = ? AND activity.role = 'manager' AND activity.id > ?
+                ORDER BY activity.id LIMIT 100
+            """, (owner, after))]
 
     def client_leads(self, owner):
         with self.connection() as db:
@@ -173,6 +194,8 @@ class Commercial:
             lead = db.execute("SELECT status FROM leads WHERE id = ?", (lead_id,)).fetchone()
             if lead is None:
                 raise KeyError(lead_id)
+            if answer and status != "closed":
+                status = "answered"
             if status is not None and status != lead["status"]:
                 db.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
                 db.execute("""
@@ -191,28 +214,44 @@ class Commercial:
                 raise KeyError(lead_id)
             return dict(row)
 
-    def list_leads(self):
+    def lead_queue(self):
         with self.connection() as db:
-            return [dict(row) for row in db.execute(
-                "SELECT * FROM leads ORDER BY (status = 'escalated') DESC, created_at DESC LIMIT 100"
+            db.execute("BEGIN")
+            count = db.execute("SELECT count(*) FROM leads WHERE status = 'escalated'").fetchone()[0]
+            items = [dict(row) for row in db.execute(
+                "SELECT * FROM leads ORDER BY (status = 'escalated') DESC, created_at DESC, id LIMIT 100"
             )]
+            return {"items": items, "waiting_count": count}
 
-    def create_quote(self, lead_id, items):
-        quote_id = uuid4().hex
+    def list_leads(self):
+        return self.lead_queue()["items"]
+
+    def create_quote(self, lead_id, items, render):
         total = sum(item["price_minor"] * item["quantity"] for item in items)
-        snapshot = json.dumps(sorted(items, key=lambda item: item["sku"]), ensure_ascii=False)
+        lines = sorted(items, key=lambda item: item["sku"])
+        snapshot = json.dumps(lines, ensure_ascii=False)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            lead = db.execute("SELECT contact FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            if lead is None:
+                raise KeyError(lead_id)
             previous = db.execute(
                 "SELECT id FROM quotes WHERE lead_id = ? AND items = ?", (lead_id, snapshot)
             ).fetchone()
-            if previous:
-                return dict(id=previous["id"], total_minor=total, currency="RUB")
-            if not db.execute("SELECT 1 FROM leads WHERE id = ?", (lead_id,)).fetchone():
-                raise KeyError(lead_id)
-            db.execute("INSERT INTO quotes VALUES (?, ?, ?, ?)",
-                       (quote_id, lead_id, snapshot, total))
+            quote_id = previous["id"] if previous else uuid4().hex
+            if not previous:
+                db.execute("INSERT INTO quotes VALUES (?, ?, ?, ?)", (quote_id, lead_id, snapshot, total))
+            if not db.execute("SELECT 1 FROM quote_pdfs WHERE quote_id = ?", (quote_id,)).fetchone():
+                payload = dict(id=quote_id, contact=lead["contact"], items=lines, total_minor=total)
+                documents = [render(payload, kind) for kind in ("quote", "invoice")]
+                db.execute("INSERT INTO quote_pdfs VALUES (?, ?, ?)", (quote_id, *documents))
         return dict(id=quote_id, total_minor=total, currency="RUB")
+
+    def quote_pdf(self, quote_id, kind):
+        with self.connection() as db:
+            row = db.execute("SELECT quote_pdf, invoice_pdf FROM quote_pdfs WHERE quote_id = ?",
+                             (quote_id,)).fetchone()
+        return row[kind + "_pdf"] if row is not None else None
 
     def get_quote(self, quote_id, owner=None):
         with self.connection() as db:

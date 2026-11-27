@@ -97,7 +97,7 @@ try {
     const contact = `audit-${width}@example.invalid`;
     await page.locator("#contact").fill(contact);
     await page.locator("#lead-form button").click();
-    await page.getByText(/передана менеджеру на разбор/).waitFor();
+    await page.getByText(/ожидает ответа менеджера/).waitFor();
 
     await page.getByRole("tab", { name: "Мои заявки" }).click();
     const lead = page.locator("#my-lead-list details").filter({ hasText: question });
@@ -113,14 +113,14 @@ try {
     await page.locator("#token").fill(token);
     await page.getByRole("button", { name: "Войти" }).click();
     const request = page.locator("#lead-list article").filter({ hasText: contact });
-    const open = request.getByRole("button", { name: "Подготовить КП" });
+    const open = request.getByRole("button", { name: "Открыть заявку" });
     await open.click();
     await page.locator("#lead-history").getByText("ИИ-помощник", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Добавить позицию" }).click();
     assert.equal(await page.locator("#quote-items input[name=sku]").count(), 2);
     await page.getByRole("button", { name: "Убрать" }).last().click();
     assert.equal(await page.locator("#quote-items input[name=sku]").count(), 1);
-    await page.getByRole("button", { name: "Сформировать КП" }).click();
+    await page.getByRole("button", { name: "Подготовить документы" }).click();
     await page.getByRole("button", { name: "Скачать КП PDF" }).waitFor();
     await open.click();
     await page.locator("#saved-documents").waitFor();
