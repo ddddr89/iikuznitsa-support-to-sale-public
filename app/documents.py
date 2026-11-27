@@ -5,6 +5,7 @@ from functools import lru_cache
 from html import escape
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 from PIL import Image
 from reportlab.lib import colors
@@ -15,6 +16,15 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, TableStyle
+
+
+def package_documents(quote_pdf, invoice_pdf):
+    """Упаковывает готовый комплект, не пересчитывая и не меняя PDF."""
+    output = BytesIO()
+    with ZipFile(output, "w") as bundle:
+        bundle.writestr("Коммерческое предложение.pdf", quote_pdf)
+        bundle.writestr("Проект счёта.pdf", invoice_pdf)
+    return output.getvalue()
 
 
 @lru_cache(maxsize=1)

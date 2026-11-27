@@ -17,7 +17,8 @@ const browser = await chromium.launch({ executablePath: process.env.CHROME_BIN |
 const pageErrors = [];
 try {
   for (const width of [1280, 390, 320]) {
-    const page = await browser.newPage({ viewport: { width, height: 900 }, acceptDownloads: true });
+    const context = await browser.newContext({ viewport: { width, height: 900 }, acceptDownloads: true });
+    const page = await context.newPage();
     page.on("pageerror", (error) => pageErrors.push(error.message));
     for (const [name, path] of [["home", "/"], ["client", "/client"], ["manager", "/manager"]]) {
       await page.goto(base + path);
@@ -36,7 +37,7 @@ try {
     }
 
     if (width === 320) {
-      await page.close();
+      await context.close();
       continue;
     }
 
@@ -116,29 +117,51 @@ try {
     const open = request.getByRole("button", { name: "Открыть заявку" });
     await open.click();
     await page.locator("#lead-history").getByText("ИИ-помощник", { exact: true }).waitFor();
+    const waiting = request.getByText("Требует ответа", { exact: true });
+    await waiting.waitFor();
+    const before = Number((await page.locator("#waiting-count").textContent()).match(/\d+$/)[0]);
+    await page.locator("#lead-state").selectOption("in_progress");
+    await page.locator("#lead-update-form button").click();
+    await request.getByText(/В работе/).waitFor();
+    await waiting.waitFor();
+    assert.equal(Number((await page.locator("#waiting-count").textContent()).match(/\d+$/)[0]), before);
+
+    const customerChat = await context.newPage();
+    customerChat.on("pageerror", (error) => pageErrors.push(error.message));
+    await customerChat.goto(base + "/client");
+    await customerChat.locator(".message.customer").getByText(question).waitFor();
+    const reply = `Проверили запрос на ширине ${width} пикселей.`;
+    await page.locator("#manager-reply").fill(reply);
+    await page.locator("#lead-update-form button").click();
+    await request.getByText(/Ответ отправлен/).waitFor();
+    assert.equal(await waiting.count(), 0);
+    assert.equal(Number((await page.locator("#waiting-count").textContent()).match(/\d+$/)[0]), before - 1);
+    await customerChat.bringToFront();
+    await customerChat.locator("#conversation").getByText(reply, { exact: true }).waitFor({ timeout: 15000 });
+    await customerChat.close();
+    await page.bringToFront();
+
     await page.getByRole("button", { name: "Добавить позицию" }).click();
     assert.equal(await page.locator("#quote-items input[name=sku]").count(), 2);
     await page.getByRole("button", { name: "Убрать" }).last().click();
     assert.equal(await page.locator("#quote-items input[name=sku]").count(), 1);
     await page.getByRole("button", { name: "Подготовить документы" }).click();
-    await page.getByRole("button", { name: "Скачать КП PDF" }).waitFor();
+    await page.locator("#saved-documents").getByRole("button", { name: "Скачать документы", exact: true }).waitFor();
     await open.click();
     await page.locator("#saved-documents").waitFor();
-    for (const [label, pattern] of [["КП PDF", /^quote-.*\.pdf$/], ["Проект счёта PDF", /^invoice-.*\.pdf$/]]) {
-      const downloaded = page.waitForEvent("download");
-      await page.locator("#saved-documents").getByRole("button", { name: label, exact: true }).click();
-      assert.match((await downloaded).suggestedFilename(), pattern);
-    }
+    const downloaded = page.waitForEvent("download");
+    await page.locator("#saved-documents").getByRole("button", { name: "Скачать документы", exact: true }).click();
+    assert.match((await downloaded).suggestedFilename(), /^documents-.*\.zip$/);
     await page.screenshot({ path: resolve(output, `${width}-manager-workspace.png`), fullPage: true });
     await page.locator("#manager-reply").fill("Закрытая черновая заметка");
     await page.getByRole("button", { name: "Выйти" }).click();
     assert.equal(await page.locator("#lead-history").textContent(), "");
     assert.equal(await page.locator("#manager-reply").inputValue(), "");
     assert.equal(await page.locator("#saved-document-list").textContent(), "");
-    await page.close();
+    await context.close();
   }
   assert.deepEqual(pageErrors, []);
-  console.log("Chrome: 1280/390/320 px, клавиатурная навигация, повтор после 503, восстановление диалога, раскрытие заявки, документы и очистка данных после выхода — OK");
+  console.log("Chrome: 1280/390/320 px, клавиатурная навигация, повтор после 503, восстановление диалога, очередь, ответ без перезагрузки, ZIP и очистка данных после выхода — OK");
 } finally {
   await browser.close();
 }

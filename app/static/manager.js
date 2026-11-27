@@ -2,25 +2,20 @@ import { byId, element, leadStatus, money, request, showHistory, status } from "
 
 let token = "";
 let selected = null;
-let quote = null;
+let savedDocuments = [];
 let session = 0;
 let queue = [];
 const leadFilter = byId("lead-filter");
 const workspace = byId("workspace");
 const accessForm = byId("access-form");
 const refresh = byId("refresh");
-const downloadArea = byId("downloads");
-const invoice = byId("download-invoice");
 const quoteForm = byId("quote-form");
 const knowledgeForm = byId("knowledge-form");
 const leadUpdateForm = byId("lead-update-form");
 const items = byId("quote-items");
-const download = byId("download");
 const add = byId("add-item");
 
 function clearQuote() {
-  quote = null;
-  downloadArea.hidden = true;
   status("quote-status", "");
   status("download-status", "");
 }
@@ -74,11 +69,12 @@ function showLeads(leads = queue, waitingCount) {
   const visible = queue.filter((lead) => leadFilter.value === "all" ||
     (lead.status === "closed") === (leadFilter.value === "closed"));
   const cards = visible.map((lead) => {
-    const waiting = lead.status === "escalated";
+    const waiting = lead.requires_reply;
     const card = element("article", undefined, waiting ? "card waiting-lead" : "card");
     const date = new Date(lead.created_at);
     const metadata = [leadStatus(lead.status), lead.sku, Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU")];
     card.append(element("h3", "Заявка № " + lead.id));
+    if (waiting) card.append(element("span", "Требует ответа", "status-chip waiting-badge"));
     card.append(element("p", metadata.filter(Boolean).join(" · "), "meta"));
     card.append(element("p", lead.contact), element("p", lead.message));
     const choose = element("button", "Открыть заявку", "secondary");
@@ -202,12 +198,8 @@ quoteForm.addEventListener("submit", async (event) => {
   try {
     const result = await request("/manager/quotes", { token, body: { lead_id: currentSelection.id, items: rows } });
     if (selected !== currentSelection || currentSession !== session) return;
-    quote = result;
-    status("quote-status", "Документы № " + quote.id + " · " + money(quote.total_minor, quote.currency));
-    download.hidden = !(quote.quote_pdf_url || quote.download_url);
-    download.textContent = quote.quote_pdf_url ? "Скачать КП PDF" : "Скачать КП";
-    invoice.hidden = !quote.invoice_pdf_url;
-    downloadArea.hidden = download.hidden && invoice.hidden;
+    status("quote-status", "Документы № " + result.id + " · " + money(result.total_minor, result.currency));
+    showSavedDocuments([result, ...savedDocuments.filter((document) => document.id !== result.id)]);
   } catch (error) {
     if (selected === currentSelection && currentSession === session) status("quote-status", error.message, true);
   } finally {
@@ -217,45 +209,36 @@ quoteForm.addEventListener("submit", async (event) => {
 });
 
 function showSavedDocuments(documents) {
+  savedDocuments = documents;
   const section = byId("saved-documents");
   const list = byId("saved-document-list");
   section.hidden = documents.length === 0;
   list.replaceChildren(...documents.map((document) => {
     const row = element("div", undefined, "document-row");
     row.append(element("span", money(document.total_minor, "RUB")));
-    const base = "/api/v1/manager/quotes/" + encodeURIComponent(document.id);
-    const savedQuote = { id: document.id, quote_pdf_url: base + "/quote.pdf", invoice_pdf_url: base + "/invoice.pdf" };
-    for (const [kind, label] of [["quote", "КП PDF"], ["invoice", "Проект счёта PDF"]]) {
-      const button = element("button", label, "secondary");
-      button.type = "button";
-      button.addEventListener("click", () => downloadDocument(button, kind, savedQuote));
-      row.append(button);
-    }
+    const button = element("button", "Скачать документы", "secondary");
+    button.type = "button";
+    button.addEventListener("click", () => downloadDocuments(button, document.id));
+    row.append(button);
     return row;
   }));
 }
 
-async function downloadDocument(button, kind, current = quote) {
+async function downloadDocuments(button, id) {
   const currentSelection = selected;
   const currentSession = session;
-  if (!current || button.disabled) return;
-  const address = kind === "invoice" ? current.invoice_pdf_url : current.quote_pdf_url || current.download_url;
-  if (!address) return;
+  if (!token || button.disabled) return;
 
   button.disabled = true;
-  status("download-status", kind === "invoice" ? "Загружаем счёт…" : "Загружаем КП…");
+  status("download-status", "Загружаем документы…");
   try {
-    const path = new URL(address, location.origin);
-    const prefix = "/api/v1/manager/quotes/" + encodeURIComponent(current.id) + "/";
-    if (path.origin !== location.origin || !path.pathname.startsWith(prefix)) {
-      throw new Error("Ссылка на документ некорректна.");
-    }
-    const file = await request(path.pathname.slice("/api/v1".length) + path.search, { token, download: true });
+    const path = "/manager/quotes/" + encodeURIComponent(id) + "/documents.zip";
+    const file = await request(path, { token, download: true });
     if (currentSession !== session || selected !== currentSelection) return;
     const url = URL.createObjectURL(file);
     const link = element("a");
     link.href = url;
-    link.download = kind + "-" + current.id + (file.type === "application/pdf" ? ".pdf" : ".html");
+    link.download = "documents-" + id + ".zip";
     document.body.append(link);
     link.click();
     link.remove();
@@ -267,9 +250,6 @@ async function downloadDocument(button, kind, current = quote) {
     button.disabled = false;
   }
 }
-
-download.addEventListener("click", () => downloadDocument(download, "quote"));
-invoice.addEventListener("click", () => downloadDocument(invoice, "invoice"));
 
 knowledgeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -296,6 +276,16 @@ knowledgeForm.addEventListener("submit", async (event) => {
   }
 });
 
+function updateClosureField() {
+  const closing = byId("lead-state").value === "closed";
+  const reason = byId("closure-reason");
+  byId("closure-reason-field").hidden = !closing;
+  reason.required = closing && Boolean(selected?.requires_reply) && !byId("manager-reply").value.trim();
+}
+
+byId("lead-state").addEventListener("change", updateClosureField);
+byId("manager-reply").addEventListener("input", updateClosureField);
+
 async function loadLeadDetail(lead) {
   const currentSession = session;
   const section = byId("lead-details");
@@ -311,6 +301,8 @@ async function loadLeadDetail(lead) {
     showHistory(byId("lead-history"), detail);
     showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
+    lead.requires_reply = detail.requires_reply;
+    updateClosureField();
     leadUpdateForm.hidden = false;
     status("lead-update-status", "");
   } catch (error) {
@@ -325,17 +317,23 @@ leadUpdateForm.addEventListener("submit", async (event) => {
   const button = leadUpdateForm.querySelector("button");
   if (!lead || !token || button.disabled) return;
   const answer = byId("manager-reply").value.trim();
+  const state = byId("lead-state").value;
+  const reason = state === "closed" ? byId("closure-reason").value.trim() : "";
   button.disabled = true;
   try {
     const path = "/manager/leads/" + encodeURIComponent(lead.id);
     const detail = await request(path, {
-      token, method: "PATCH", body: { status: byId("lead-state").value, ...(answer ? { answer } : {}) },
+      token, method: "PATCH", body: { status: state, ...(answer ? { answer } : {}),
+        ...(reason ? { closure_reason: reason } : {}) },
     });
     if (currentSession !== session || selected !== lead) return;
     showHistory(byId("lead-history"), detail);
     showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
     byId("manager-reply").value = "";
+    byId("closure-reason").value = "";
+    lead.requires_reply = detail.requires_reply;
+    updateClosureField();
     status("lead-update-status", "Изменения сохранены.");
     try {
       const { items, waiting_count: waiting } = await request("/manager/leads", { token });

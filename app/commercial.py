@@ -6,6 +6,17 @@ from html import escape
 from uuid import uuid4
 
 
+# Старые записи читаются без перезаписи. Для исторического «В работе»
+# без ответа невозможно отличить начальную эскалацию от обычной заявки.
+WAITING_FOR_REPLY = """
+    COALESCE(leads.requires_reply, leads.status IN ('escalated', 'in_progress')
+        AND NOT EXISTS (
+            SELECT 1 FROM lead_activity
+            WHERE lead_id = leads.id AND role = 'manager'
+        ))
+"""
+
+
 class Commercial:
     def __init__(self, db_path):
         self.db_path = db_path
@@ -46,6 +57,8 @@ class Commercial:
             fields = {field["name"] for field in db.execute("PRAGMA table_info(leads)")}
             if "status" not in fields:
                 db.execute("ALTER TABLE leads ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
+            if "requires_reply" not in fields:
+                db.execute("ALTER TABLE leads ADD COLUMN requires_reply INTEGER CHECK (requires_reply IN (0, 1))")
             db.execute("CREATE INDEX IF NOT EXISTS leads_recent ON leads(created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS quotes_by_lead ON quotes(lead_id)")
             db.execute("""
@@ -79,23 +92,32 @@ class Commercial:
         """Сохраняет заявку и копирует историю владельца при создании новой записи."""
         now = datetime.now(timezone.utc)
         lead = dict(id=uuid4().hex, contact=contact, message=message, sku=sku,
-                    created_at=now.isoformat(), status="escalated" if escalation else "new")
+                    created_at=now.isoformat(), status="escalated" if escalation else "new",
+                    requires_reply=escalation)
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute("""
-                SELECT leads.* FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                SELECT leads.id, contact, message, sku, created_at, status,
+                       {WAITING_FOR_REPLY} AS requires_reply
+                FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
                 WHERE contact = ? AND message = ? AND sku IS ? AND lead_sessions.owner IS ?
                 AND created_at >= ? AND (NOT ? OR status IN ('new', 'escalated', 'in_progress'))
                 ORDER BY created_at DESC LIMIT 1
-            """, (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat(), escalation)).fetchone()
+            """.format(WAITING_FOR_REPLY=WAITING_FOR_REPLY),
+                (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat(), escalation)).fetchone()
             if previous:
                 lead = dict(previous)
-                if escalation and lead["status"] == "new":
-                    db.execute("UPDATE leads SET status = 'escalated' WHERE id = ?", (lead["id"],))
-                    lead["status"] = "escalated"
+                lead["requires_reply"] = bool(lead["requires_reply"])
+                if escalation and not lead["requires_reply"]:
+                    if lead["status"] == "new":
+                        lead["status"] = "escalated"
+                    db.execute("UPDATE leads SET status = ?, requires_reply = 1 WHERE id = ?",
+                               (lead["status"], lead["id"]))
+                    lead["requires_reply"] = True
                 return {**lead, "duplicate": True}
             db.execute(
-                "INSERT INTO leads VALUES (:id, :contact, :message, :sku, :created_at, :status)",
+                """INSERT INTO leads (id, contact, message, sku, created_at, status, requires_reply)
+                   VALUES (:id, :contact, :message, :sku, :created_at, :status, :requires_reply)""",
                 lead,
             )
             if owner:
@@ -173,15 +195,19 @@ class Commercial:
         with self.connection() as db:
             db.execute("BEGIN")
             row = db.execute("""
-                SELECT leads.* FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                SELECT leads.id, contact, message, sku, created_at, status,
+                       {WAITING_FOR_REPLY} AS requires_reply
+                FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
                 WHERE leads.id = ? AND (? IS NULL OR lead_sessions.owner = ?)
-            """, (lead_id, owner, owner)).fetchone()
+            """.format(WAITING_FOR_REPLY=WAITING_FOR_REPLY), (lead_id, owner, owner)).fetchone()
             if row is None:
                 raise KeyError(lead_id)
             lead = dict(row)
+            lead["requires_reply"] = bool(lead["requires_reply"])
             lead["history"] = [dict(item) for item in db.execute("""
-                SELECT role, content, created_at FROM lead_activity WHERE lead_id = ? ORDER BY id
-            """, (lead_id,))]
+                SELECT role, content, created_at FROM lead_activity
+                WHERE lead_id = ? AND (? IS NULL OR role != 'closure_reason') ORDER BY id
+            """, (lead_id, owner))]
             lead["documents"] = [dict(item) for item in db.execute("""
                 SELECT id, total_minor FROM quotes WHERE lead_id = ? ORDER BY rowid DESC
             """, (lead_id,))]
@@ -189,17 +215,32 @@ class Commercial:
             lead.pop("contact")
         return lead
 
-    def update_lead(self, lead_id, status=None, answer=None):
+    def update_lead(self, lead_id, status=None, answer=None, closure_reason=None):
         now = datetime.now(timezone.utc).isoformat()
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            lead = db.execute("SELECT status FROM leads WHERE id = ?", (lead_id,)).fetchone()
+            lead = db.execute(f"SELECT status, {WAITING_FOR_REPLY} AS pending FROM leads WHERE id = ?",
+                              (lead_id,)).fetchone()
             if lead is None:
                 raise KeyError(lead_id)
+            waiting = bool(lead["pending"])
+            if status == "closed" and waiting and not (closure_reason or answer):
+                raise ValueError("Укажите причину закрытия обращения без ответа")
+            if status == "answered" and not answer and (waiting or not db.execute("""
+                SELECT 1 FROM lead_activity WHERE lead_id = ? AND role = 'manager'
+            """, (lead_id,)).fetchone()):
+                raise ValueError("Введите ответ клиенту")
+            if closure_reason and status != "closed":
+                raise ValueError("Причину можно сохранить при закрытии обращения")
+            if answer or status == "closed":
+                waiting = False
+            elif status == "escalated":
+                waiting = True
             if answer and status != "closed":
                 status = "answered"
+            db.execute("UPDATE leads SET status = ?, requires_reply = ? WHERE id = ?",
+                       (status or lead["status"], waiting, lead_id))
             if status is not None and status != lead["status"]:
-                db.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
                 db.execute("""
                     INSERT INTO lead_activity (lead_id, role, content, created_at) VALUES (?, 'status', ?, ?)
                 """, (lead_id, status, now))
@@ -207,6 +248,11 @@ class Commercial:
                 db.execute("""
                     INSERT INTO lead_activity (lead_id, role, content, created_at) VALUES (?, 'manager', ?, ?)
                 """, (lead_id, answer, now))
+            if closure_reason:
+                db.execute("""
+                    INSERT INTO lead_activity (lead_id, role, content, created_at)
+                    VALUES (?, 'closure_reason', ?, ?)
+                """, (lead_id, closure_reason, now))
         return self.lead_detail(lead_id)
 
     def get_lead(self, lead_id):
@@ -219,10 +265,14 @@ class Commercial:
     def lead_queue(self):
         with self.connection() as db:
             db.execute("BEGIN")
-            count = db.execute("SELECT count(*) FROM leads WHERE status = 'escalated'").fetchone()[0]
+            count = db.execute(f"SELECT count(*) FROM leads WHERE {WAITING_FOR_REPLY}").fetchone()[0]
             items = [dict(row) for row in db.execute(
-                "SELECT * FROM leads ORDER BY (status = 'escalated') DESC, created_at DESC, id LIMIT 100"
+                f"""SELECT id, contact, message, sku, created_at, status,
+                           {WAITING_FOR_REPLY} AS requires_reply
+                    FROM leads ORDER BY requires_reply DESC, created_at DESC, id LIMIT 100"""
             )]
+            for item in items:
+                item["requires_reply"] = bool(item["requires_reply"])
             return {"items": items, "waiting_count": count}
 
     def list_leads(self):

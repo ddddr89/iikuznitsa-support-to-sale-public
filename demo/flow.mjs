@@ -103,16 +103,18 @@ try {
   const quote = await (await quoteWait).json();
   assert.ok(quote.total_minor > 0);
   const downloadWait = page.waitForEvent("download");
-  await page.locator("#download-invoice").click();
-  const invoice = await downloadWait;
-  const invoicePath = resolve(output, "invoice.pdf");
-  await invoice.saveAs(invoicePath);
-  const invoiceText = execFileSync("pdftotext", [invoicePath, "-"], { encoding: "utf8" });
-  assert.match(invoiceText, /Счёт на оплату/);
+  await page.locator("#saved-documents").getByRole("button", { name: "Скачать документы" }).first().click();
+  const documents = await downloadWait;
+  const archivePath = resolve(output, "documents.zip");
+  await documents.saveAs(archivePath);
   const total = (quote.total_minor / 100).toFixed(2).replace(".", ",");
-  assert.ok(invoiceText.replace(/\s/g, "").includes(total), "Итог в PDF совпадает с суммой КП");
+  for (const name of ["Коммерческое предложение.pdf", "Проект счёта.pdf"]) {
+    const pdf = execFileSync("python3", ["-c", "from zipfile import ZipFile; import sys; sys.stdout.buffer.write(ZipFile(sys.argv[1]).read(sys.argv[2]))", archivePath, name]);
+    const text = execFileSync("pdftotext", ["-", "-"], { input: pdf, encoding: "utf8" });
+    assert.ok(text.replace(/\s/g, "").includes(total), "Итог PDF совпадает с суммой пакета");
+  }
   await pause(page, 6200);
-  console.log("2/4 Счёт PDF скачан и проверен");
+  console.log("2/4 Архив с обоими PDF скачан и проверен");
 
   const topic = "Как проверить статус конкурсного счёта?";
   const answer = "Статус конкурсного счёта проверяет менеджер по номеру заявки.";
@@ -132,19 +134,19 @@ try {
   await reopened.getByText(managerAnswer).waitFor();
   await reopened.getByText("Ответ отправлен").first().waitFor();
   const clientDownload = page.waitForEvent("download");
-  await reopened.getByRole("link", { name: "Проект счёта PDF" }).click();
-  assert.match((await clientDownload).suggestedFilename(), /invoice-.*\.pdf$/);
+  await reopened.getByRole("link", { name: "Скачать документы" }).click();
+  assert.match((await clientDownload).suggestedFilename(), /documents-.*\.zip$/);
   await page.screenshot({ path: resolve(output, "my-leads.png"), fullPage: true });
   await pause(page, 7300);
   const outsider = await browser.newPage();
   await outsider.request.get(base + "/api/v1/client/leads");
-  for (const path of ["/client/leads/" + leadId, "/client/quotes/" + quote.id + "/invoice.pdf"]) {
+  for (const path of ["/client/leads/" + leadId, "/client/quotes/" + quote.id + "/documents.zip"]) {
     assert.equal((await outsider.request.get(base + "/api/v1" + path)).status(), 404);
   }
   assert.equal((await outsider.request.patch(base + "/api/v1/manager/leads/" + leadId,
     { data: { status: "closed" } })).status(), 401);
   await outsider.close();
-  console.log("Доступ к заявке и счёту из другой сессии отклонён");
+  console.log("Доступ к заявке и комплекту документов из другой сессии отклонён");
   await page.getByRole("tab", { name: "Чат" }).click();
   await page.locator("#question").fill(topic);
   const follow = page.waitForResponse((res) => res.url().endsWith("/api/v1/chat"));

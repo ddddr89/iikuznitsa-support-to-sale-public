@@ -59,10 +59,14 @@
             <option value="escalated">Ожидает ответа менеджера</option>
             <option value="in_progress">В работе</option>
             <option value="answered">Ответ отправлен</option>
-            <option value="closed">Обращение закрыто</option>
+            <option value="closed">Закрыта</option>
           </select>
           <label for="manager-reply">Ответ клиенту</label>
           <textarea id="manager-reply" rows="3" maxlength="2000"></textarea>
+          <div id="closure-reason-field" hidden>
+            <label for="closure-reason">Причина закрытия для истории кабинета</label>
+            <textarea id="closure-reason" rows="2" maxlength="2000"></textarea>
+          </div>
           <button>Сохранить изменения</button>
         </form>
         <p id="lead-update-status" class="status" role="status"></p>
@@ -77,10 +81,6 @@
         </div>
       </form>
       <p id="quote-status" class="status" role="status"></p>
-      <div id="downloads" class="actions" hidden>
-        <button type="button" id="download" hidden>Скачать КП</button>
-        <button type="button" id="download-invoice" class="secondary" hidden>Скачать проект счёта PDF</button>
-      </div>
       <p id="download-status" class="status" role="status"></p>
       <section id="saved-documents" aria-labelledby="saved-documents-title" hidden>
         <h3 id="saved-documents-title">Готовые документы</h3>

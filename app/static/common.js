@@ -70,7 +70,7 @@ const leadStatuses = {
   escalated: "Ожидает ответа менеджера",
   in_progress: "В работе",
   answered: "Ответ отправлен",
-  closed: "Обращение закрыто",
+  closed: "Закрыта",
 };
 
 export function leadStatus(value) {
@@ -79,7 +79,7 @@ export function leadStatus(value) {
 
 export function showHistory(container, lead) {
   const roles = { request: "Обращение", client: "Клиент", assistant: "ИИ-помощник",
-    manager: "Менеджер", status: "Изменение статуса" };
+    manager: "Менеджер", status: "Изменение статуса", closure_reason: "Причина закрытия" };
   const history = [...lead.history];
   if (!history.some((item) => item.role === "client" && item.content === lead.message)) {
     history.push({ role: "request", content: lead.message, created_at: lead.created_at });

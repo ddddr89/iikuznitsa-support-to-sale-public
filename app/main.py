@@ -23,7 +23,7 @@ from app.catalog import Catalog
 from app.catalog_advice import advisory, scoped_answer
 from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
-from app.documents import render_pdf
+from app.documents import package_documents, render_pdf
 from app.knowledge import Knowledge
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
@@ -122,6 +122,7 @@ class Quote(Input):
 class LeadUpdate(Input):
     status: LeadStatus | None = None
     answer: Text | None = None
+    closure_reason: Text | None = None
 
 
 class ConfirmedAnswer(Input):
@@ -157,6 +158,7 @@ def create_app(db_path=None):
             raise HTTPException(404, "Обращение не найдено")
         return owner
     chat_max = int(os.getenv("APP_CHAT_PER_MINUTE", "0"))
+    chat_session_max = int(os.getenv("APP_CHAT_PER_SESSION_PER_MINUTE", "0"))
     chat_times = deque()
     chat_lock = Lock()
     require_lead_session = os.getenv("APP_REQUIRE_LEAD_SESSION", "0") == "1"
@@ -226,14 +228,19 @@ def create_app(db_path=None):
         Каталог и подтверждённые ответы обрабатываются локально. Для обычной
         консультации используется модель, а трасса обозначает фактический маршрут.
         """
-        if chat_max > 0:
+        owner = session_owner(request)
+        if chat_max > 0 or (owner and chat_session_max > 0):
             with chat_lock:
                 now = monotonic()
-                while chat_times and chat_times[0] <= now - 60:
+                while chat_times and chat_times[0][0] <= now - 60:
                     chat_times.popleft()
-                if len(chat_times) >= chat_max:
+                global_limit = chat_max > 0 and len(chat_times) >= chat_max
+                session_limit = owner and chat_session_max > 0 and (
+                    sum(key == owner for _, key in chat_times) >= chat_session_max
+                )
+                if global_limit or session_limit:
                     raise HTTPException(429, "Лимит запросов к помощнику", {"Retry-After": "60"})
-                chat_times.append(now)
+                chat_times.append((now, owner))
         previous = body.history[-1].question if body.history else ""
         # Уточнение без новой категории уточняет последний товарный запрос.
         earlier = "\n".join(item.question for item in reversed(body.history))
@@ -280,7 +287,6 @@ def create_app(db_path=None):
         actions = [{"type": "knowledge_search", "status": "done"}]
         if searched:
             actions.insert(0, {"type": "catalog_search", "status": "done"})
-        owner = session_owner(request)
         model_unavailable = result["provider"] == "catalog" and any(
             action["status"] == "error" and action["type"] in {"route_n8n", "model_yandex"}
             for action in result["actions"]
@@ -376,6 +382,10 @@ def create_app(db_path=None):
                      owner: Annotated[str, Depends(require_session)]):
         return pdf_response(quote_id, kind, owner)
 
+    @api.get("/api/v1/client/quotes/{quote_id}/documents.zip")
+    def client_documents(quote_id: str, owner: Annotated[str, Depends(require_session)]):
+        return documents_response(quote_id, owner)
+
     @api.get("/api/v1/manager/leads", dependencies=[Depends(require_manager)])
     def leads():
         return commercial.lead_queue()
@@ -392,7 +402,9 @@ def create_app(db_path=None):
         if body.answer is None and body.status is None:
             raise HTTPException(422, "Укажите ответ или статус")
         try:
-            return commercial.update_lead(lead_id, body.status, body.answer)
+            return commercial.update_lead(lead_id, body.status, body.answer, body.closure_reason)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, "Обращение не найдено") from exc
 
@@ -432,7 +444,8 @@ def create_app(db_path=None):
             raise HTTPException(404, "Заявка не найдена") from exc
         base = f'/api/v1/manager/quotes/{quote["id"]}'
         return {**quote, "download_url": f"{base}/download",
-                "quote_pdf_url": f"{base}/quote.pdf", "invoice_pdf_url": f"{base}/invoice.pdf"}
+                "quote_pdf_url": f"{base}/quote.pdf", "invoice_pdf_url": f"{base}/invoice.pdf",
+                "documents_url": f"{base}/documents.zip"}
 
     @api.get("/api/v1/manager/quotes/{quote_id}/download", dependencies=[Depends(require_manager)])
     def download(quote_id: str):
@@ -449,17 +462,34 @@ def create_app(db_path=None):
     def download_pdf(quote_id: str, kind: Literal["quote", "invoice"]):
         return pdf_response(quote_id, kind)
 
-    def pdf_response(quote_id, kind, owner=None):
-        """Читает PDF после проверки владельца; старые снимки рендерит по запросу."""
+    @api.get("/api/v1/manager/quotes/{quote_id}/documents.zip", dependencies=[Depends(require_manager)])
+    def manager_documents(quote_id: str):
+        return documents_response(quote_id)
+
+    def authorized_quote(quote_id, owner):
         try:
-            quote = commercial.get_quote(quote_id, owner)
+            return commercial.get_quote(quote_id, owner)
         except KeyError as exc:
             raise HTTPException(404, "КП не найдено") from exc
-        content = commercial.quote_pdf(quote_id, kind)
-        if content is None:
-            content = render_documents(quote, kind)
-        return Response(content, media_type="application/pdf", headers={
+
+    def document_pdf(quote, kind):
+        """Использует сохранённый PDF; старые снимки рендерит по запросу."""
+        content = commercial.quote_pdf(quote["id"], kind)
+        return render_documents(quote, kind) if content is None else content
+
+    def pdf_response(quote_id, kind, owner=None):
+        quote = authorized_quote(quote_id, owner)
+        return Response(document_pdf(quote, kind), media_type="application/pdf", headers={
             "Content-Disposition": f'attachment; filename="{kind}-{quote["id"]}.pdf"',
+            "Cache-Control": "no-store",
+        })
+
+    def documents_response(quote_id, owner=None):
+        """Возвращает оба PDF одним архивом после проверки права на комплект."""
+        quote = authorized_quote(quote_id, owner)
+        archive = package_documents(document_pdf(quote, "quote"), document_pdf(quote, "invoice"))
+        return Response(archive, media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="documents-{quote["id"]}.zip"',
             "Cache-Control": "no-store",
         })
 

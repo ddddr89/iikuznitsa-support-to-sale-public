@@ -359,11 +359,9 @@ async function loadMyLeads() {
           for (const document of detail.documents) {
             const row = element("div", undefined, "document-row");
             row.append(element("span", money(document.total_minor, "RUB")));
-            for (const [kind, name] of [["quote", "КП PDF"], ["invoice", "Проект счёта PDF"]]) {
-              const link = element("a", name);
-              link.href = "/api/v1/client/quotes/" + encodeURIComponent(document.id) + "/" + kind + ".pdf";
-              row.append(link);
-            }
+            const link = element("a", "Скачать документы");
+            link.href = "/api/v1/client/quotes/" + encodeURIComponent(document.id) + "/documents.zip";
+            row.append(link);
             content.append(row);
           }
         } catch (error) {

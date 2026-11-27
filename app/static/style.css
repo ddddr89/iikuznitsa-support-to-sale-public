@@ -199,3 +199,8 @@ select { font: inherit; width: 100%; padding: .6rem; border: 1px solid var(--fie
 .waiting-lead {
   border-inline-start: 4px solid var(--accent, #cf003d);
 }
+
+.waiting-badge {
+  color: var(--accent, #cf003d);
+  background: #fff0f2;
+}

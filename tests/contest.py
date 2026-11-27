@@ -1,9 +1,15 @@
 """HTTP acceptance tests against tests/run-smoke.sh and its demo fixtures."""
 
+import json
+import subprocess
 import unittest
+from io import BytesIO
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from uuid import uuid4
+from zipfile import ZipFile
 
-from smoke import call
+from smoke import BASE, call
 
 
 class ContestTests(unittest.TestCase):
@@ -90,6 +96,48 @@ class ContestTests(unittest.TestCase):
         quote = self.quote(self.lead()["id"])
         call(quote["invoice_pdf_url"], status=401)
         self.assertTrue(call(quote["invoice_pdf_url"], auth=True).startswith(b"%PDF-"))
+
+
+    def test_16_document_zip_matches_authorized_pdfs_and_respects_ownership(self):
+        def session_cookie():
+            with urlopen(BASE + self.api + "/client/leads", timeout=20) as response:
+                return response.headers["Set-Cookie"].split(";", 1)[0]
+
+        owner = session_cookie()
+        request = Request(BASE + self.api + "/leads", json.dumps({
+            "contact": "bundle@example.invalid", "message": "Нужны документы на два монитора",
+            "sku": "DEMO-MON-01",
+        }).encode(), {"Content-Type": "application/json", "Cookie": owner})
+        with urlopen(request, timeout=20) as response:
+            lead = json.load(response)
+        package = self.quote(lead["id"])
+        path = self.api + "/client/quotes/" + package["id"] + "/documents.zip"
+        raw = call(package["documents_url"], auth=True)
+        call(package["documents_url"], status=401)
+        for headers in ({}, {"Cookie": session_cookie()}):
+            with self.assertRaises(HTTPError) as forbidden:
+                urlopen(Request(BASE + path, headers=headers), timeout=20)
+            self.assertEqual(forbidden.exception.code, 404)
+            forbidden.exception.close()
+        with urlopen(Request(BASE + path, headers={"Cookie": owner}), timeout=20) as response:
+            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+            self.assertIn(".zip", response.headers["Content-Disposition"])
+            client_zip = response.read()
+        for data in (raw, client_zip):
+            with ZipFile(BytesIO(data)) as archive:
+                self.assertEqual(archive.namelist(), ["Коммерческое предложение.pdf", "Проект счёта.pdf"])
+                self.assertIsNone(archive.testzip())
+                for name, url in zip(archive.namelist(), (package["quote_pdf_url"], package["invoice_pdf_url"])):
+                    pdf = archive.read(name)
+                    self.assertEqual(pdf, call(url, auth=True))
+                    text = subprocess.run(["pdftotext", "-layout", "-", "-"], input=pdf, check=True,
+                                          stdout=subprocess.PIPE).stdout.decode()
+                    normalized = "".join(text.split())
+                    self.assertRegex(text, r"(?m)^\s*DEMO-MON-01[^\n]*?\s+2\s+23\s+990,00\s+₽\s+47\s+980,00")
+                    self.assertIn("47980,00", normalized)
+                    if name == "Проект счёта.pdf":
+                        self.assertIn("Оплата по этому документу не предусмотрена", text)
 
 
 if __name__ == "__main__":
