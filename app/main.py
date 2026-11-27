@@ -406,8 +406,9 @@ def create_app(db_path=None):
         return documents_response(quote_id, owner)
 
     @api.get("/api/v1/manager/leads", dependencies=[Depends(require_manager)])
-    def leads():
-        return commercial.lead_queue()
+    def leads(page: int = Query(1, ge=1), limit: int = Query(100, ge=1, le=100),
+              view: Literal["all", "open", "closed", "waiting"] = "all"):
+        return commercial.lead_queue(page, limit, view)
 
     @api.get("/api/v1/manager/leads/{lead_id}", dependencies=[Depends(require_manager)])
     def manager_lead(lead_id: str):

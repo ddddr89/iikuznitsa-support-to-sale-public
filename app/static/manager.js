@@ -4,8 +4,13 @@ let token = "";
 let selected = null;
 let savedDocuments = [];
 let session = 0;
-let queue = [];
+let queuePage = 1;
+let queueView = "open";
+let queueRequest = 0;
+const queueLimit = 25;
 const leadFilter = byId("lead-filter");
+const prevPage = byId("leads-prev");
+const nextPage = byId("leads-next");
 const workspace = byId("workspace");
 const accessForm = byId("access-form");
 const refresh = byId("refresh");
@@ -63,12 +68,13 @@ add.addEventListener("click", () => {
 });
 quoteForm.addEventListener("input", clearQuote);
 
-function showLeads(leads = queue, waitingCount) {
-  queue = leads;
-  if (waitingCount !== undefined) byId("waiting-count").textContent = `Ожидают ответа: ${waitingCount}`;
-  const visible = queue.filter((lead) => leadFilter.value === "all" ||
-    (lead.status === "closed") === (leadFilter.value === "closed"));
-  const cards = visible.map((lead) => {
+function showLeads({ items: leads, waiting_count: waiting, page, pages, total }) {
+  queuePage = page;
+  byId("waiting-count").textContent = `Ожидают ответа: ${waiting}`;
+  byId("leads-page").textContent = `Страница ${page} из ${pages} · Всего: ${total}`;
+  prevPage.disabled = page <= 1;
+  nextPage.disabled = page >= pages;
+  const cards = leads.map((lead) => {
     const waiting = lead.requires_reply;
     const card = element("article", undefined, waiting ? "card waiting-lead" : "card");
     const date = new Date(lead.created_at);
@@ -99,7 +105,36 @@ function showLeads(leads = queue, waitingCount) {
   byId("lead-list").replaceChildren(...(cards.length ? cards : [element("p", "Заявок пока нет.")]));
 }
 
-leadFilter.addEventListener("change", () => showLeads());
+function fetchLeads(accessToken, page, view) {
+  const query = new URLSearchParams({ page, view, limit: queueLimit });
+  return request("/manager/leads?" + query, { token: accessToken });
+}
+
+async function loadQueue(page, view, keepSelection = false) {
+  if (!token) return;
+  const sequence = ++queueRequest;
+  refresh.disabled = true;
+  status("access-status", "Обновляем заявки…");
+  try {
+    const result = await fetchLeads(token, page, view);
+    if (sequence !== queueRequest) return;
+    queueView = view;
+    leadFilter.value = view;
+    showLeads(result);
+    if (!keepSelection && selected && !result.items.some((lead) => lead.id === selected.id)) resetSelection();
+    status("access-status", "");
+  } catch (error) {
+    if (sequence !== queueRequest) return;
+    leadFilter.value = queueView;
+    status("access-status", error.message, true);
+  } finally {
+    if (sequence === queueRequest) refresh.disabled = false;
+  }
+}
+
+leadFilter.addEventListener("change", () => loadQueue(1, leadFilter.value));
+prevPage.addEventListener("click", () => loadQueue(queuePage - 1, queueView));
+nextPage.addEventListener("click", () => loadQueue(queuePage + 1, queueView));
 
 function resetSelection() {
   selected = null;
@@ -126,8 +161,9 @@ function showSession(active) {
 byId("sign-out").addEventListener("click", () => {
   session += 1;
   token = "";
-  queue = [];
-  leadFilter.value = "open";
+  queueRequest += 1;
+  queuePage = 1;
+  leadFilter.value = queueView = "open";
   refresh.disabled = false;
   resetSelection();
   byId("lead-list").replaceChildren();
@@ -145,13 +181,13 @@ accessForm.addEventListener("submit", async (event) => {
   button.disabled = true;
   status("access-status", "Проверяем доступ и загружаем заявки…");
   try {
-    const { items: leads, waiting_count: waiting } = await request("/manager/leads", { token: entered });
+    const result = await fetchLeads(entered, 1, queueView);
     session += 1;
     token = entered;
     accessForm.reset();
-    showLeads(leads, waiting);
+    showLeads(result);
     showSession(true);
-    status("access-status", "Заявок загружено: " + leads.length);
+    status("access-status", "");
     refresh.focus();
   } catch (error) {
     status("access-status", error.message, true);
@@ -160,22 +196,7 @@ accessForm.addEventListener("submit", async (event) => {
   }
 });
 
-refresh.addEventListener("click", async () => {
-  const currentSession = session;
-  refresh.disabled = true;
-  status("access-status", "Обновляем заявки…");
-  try {
-    const { items: leads, waiting_count: waiting } = await request("/manager/leads", { token });
-    if (currentSession !== session) return;
-    showLeads(leads, waiting);
-    if (selected && !leads.some((lead) => lead.id === selected.id)) resetSelection();
-    status("access-status", "Заявок загружено: " + leads.length);
-  } catch (error) {
-    if (currentSession === session) status("access-status", error.message, true);
-  } finally {
-    if (currentSession === session) refresh.disabled = false;
-  }
-});
+refresh.addEventListener("click", () => loadQueue(queuePage, queueView));
 
 quoteForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -335,12 +356,8 @@ leadUpdateForm.addEventListener("submit", async (event) => {
     lead.requires_reply = detail.requires_reply;
     updateClosureField();
     status("lead-update-status", "Изменения сохранены.");
-    try {
-      const { items, waiting_count: waiting } = await request("/manager/leads", { token });
-      if (currentSession === session) showLeads(items, waiting);
-    } catch {
-      // Сохранённое обращение доступно даже при сбое обновления списка.
-    }
+    const view = leadFilter.value;
+    await loadQueue(view === queueView ? queuePage : 1, view, true);
   } catch (error) {
     if (currentSession === session && selected === lead) status("lead-update-status", error.message, true);
   } finally {

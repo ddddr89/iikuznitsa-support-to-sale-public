@@ -41,10 +41,16 @@
       <label for="lead-filter">Показывать заявки</label>
       <select id="lead-filter">
         <option value="open">Открытые</option>
+        <option value="waiting">Требующие ответа</option>
         <option value="closed">Закрытые</option>
         <option value="all">Все заявки</option>
       </select>
       <div id="lead-list" class="cards"></div>
+      <nav class="row" aria-label="Страницы заявок">
+        <button type="button" class="secondary" id="leads-prev" disabled>Назад</button>
+        <span id="leads-page" role="status"></span>
+        <button type="button" class="secondary" id="leads-next" disabled>Далее</button>
+      </nav>
     </section>
     <section class="panel" aria-labelledby="quote">
       <h2 id="quote">Работа с заявкой</h2>

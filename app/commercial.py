@@ -262,18 +262,33 @@ class Commercial:
                 raise KeyError(lead_id)
             return dict(row)
 
-    def lead_queue(self):
+    def lead_queue(self, page=1, limit=100, view="all"):
+        """Читает страницу и глобальный счётчик ожидания из одного снимка."""
+        where = {
+            "all": "1",
+            "open": "status != 'closed'",
+            "closed": "status = 'closed'",
+            "waiting": WAITING_FOR_REPLY,
+        }[view]
         with self.connection() as db:
             db.execute("BEGIN")
             count = db.execute(f"SELECT count(*) FROM leads WHERE {WAITING_FOR_REPLY}").fetchone()[0]
+            total = count if view == "waiting" else db.execute(
+                f"SELECT count(*) FROM leads WHERE {where}"
+            ).fetchone()[0]
+            pages = max(1, (total + limit - 1) // limit)
+            page = min(page, pages)
             items = [dict(row) for row in db.execute(
                 f"""SELECT id, contact, message, sku, created_at, status,
                            {WAITING_FOR_REPLY} AS requires_reply
-                    FROM leads ORDER BY requires_reply DESC, created_at DESC, id LIMIT 100"""
+                    FROM leads WHERE {where}
+                    ORDER BY requires_reply DESC, created_at DESC, id LIMIT ? OFFSET ?""",
+                (limit, (page - 1) * limit),
             )]
             for item in items:
                 item["requires_reply"] = bool(item["requires_reply"])
-            return {"items": items, "waiting_count": count}
+            return {"items": items, "waiting_count": count, "total": total,
+                    "page": page, "pages": pages}
 
     def list_leads(self):
         return self.lead_queue()["items"]

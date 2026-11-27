@@ -12,6 +12,31 @@ class WaitingQueueTests(TestCase):
         self.store = Commercial(Path(directory.name) / "queue.sqlite3")
         self.store.init()
 
+    def test_queue_paginates_120_leads_and_keeps_old_waiting_leads_first(self):
+        created = [
+            self.store.create_lead("test@example.invalid", f"Обращение {i}", "SKU-1",
+                                   escalation=i in {1, 2, 120}, owner="customer")
+            for i in range(1, 121)
+        ]
+        self.store.update_lead(created[0]["id"], "in_progress")
+        self.store.update_lead(created[2]["id"], "closed")
+        for index in range(100, 120):
+            lead = self.store.lead_detail(created[index]["id"], "customer")
+            self.assertEqual((lead["message"], lead["sku"]), (f"Обращение {index + 1}", "SKU-1"))
+        pages = [self.store.lead_queue(page, 25) for page in range(1, 6)]
+        rows = [row for page in pages for row in page["items"]]
+        self.assertEqual([len(page["items"]) for page in pages], [25, 25, 25, 25, 20])
+        self.assertEqual({row["id"] for row in rows}, {lead["id"] for lead in created})
+        self.assertEqual([row["id"] for row in rows[:3]],
+                         [created[i]["id"] for i in (119, 1, 0)])
+        self.assertTrue(all(page["total"] == 120 and page["waiting_count"] == 3 for page in pages))
+        self.assertEqual(self.store.lead_queue(1, 25, "open")["total"], 119)
+        self.assertEqual(self.store.lead_queue(1, 25, "closed")["total"], 1)
+        self.assertEqual(self.store.lead_queue(2, 2, "waiting")["items"][0]["id"], created[0]["id"])
+        self.store.update_lead(created[0]["id"], answer="Ответ")
+        filtered = self.store.lead_queue(2, 2, "waiting")
+        self.assertEqual((filtered["page"], filtered["pages"], filtered["waiting_count"]), (1, 1, 2))
+
     def test_taking_question_does_not_clear_priority_until_reply(self):
         question = self.store.create_lead("test@example.invalid", "Срок доставки", escalation=True, owner="owner")
         ordinary = self.store.create_lead("test@example.invalid", "Подготовить КП", owner="owner")
