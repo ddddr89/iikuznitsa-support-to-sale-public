@@ -41,7 +41,8 @@ class ContestTests(unittest.TestCase):
         first = call(self.api + "/products?limit=1")["items"]
         second = call(self.api + "/products?limit=1&offset=1")["items"]
         self.assertNotEqual(first[0]["sku"], second[0]["sku"])
-        snapshot = call(self.api + "/catalog/status")
+        call(self.api + "/catalog/status", status=401)
+        snapshot = call(self.api + "/catalog/status", auth=True)
         self.assertEqual(snapshot["source"], "demo")
         self.assertEqual(snapshot["item_count"], 6)
 

@@ -228,9 +228,9 @@ def create_app(db_path=None):
     def health():
         return {"status": "ok"}
 
-    @api.get("/api/v1/catalog/status")
+    @api.get("/api/v1/catalog/status", dependencies=[Depends(require_manager)])
     def catalog_status():
-        return catalog.status()
+        return {**catalog.status(), "last_remote_sync": catalog.remote_sync_status()}
 
     @api.get("/api/v1/products")
     def products(q: str = Query("", max_length=200),

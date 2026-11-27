@@ -24,7 +24,7 @@ try {
       await page.goto(base + path);
       await page.evaluate(() => document.fonts.ready);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
-      if (name === "client") await page.locator("#catalog-source").waitFor();
+      if (name === "client") assert.equal(await page.locator("#catalog-source").count(), 0);
       if (name === "home") {
         const overlap = await page.evaluate(() => {
           const text = document.querySelector(".product-name").getBoundingClientRect();
@@ -42,7 +42,6 @@ try {
     }
 
     await page.goto(base + "/client");
-    await page.locator("#catalog-source").waitFor();
     assert.equal(await page.locator("#search-products article").count(), 0);
     assert.equal(await page.locator("#handoff").isVisible(), false);
     await page.getByRole("tab", { name: "Чат" }).press("ArrowRight");

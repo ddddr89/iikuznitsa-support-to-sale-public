@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Softline catalog synchronization at 04:00 Moscow time
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Europe/Moscow
+Persistent=true
+Unit=iikuznitsa-catalog-sync.service
+
+[Install]
+WantedBy=timers.target

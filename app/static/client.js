@@ -246,36 +246,6 @@ submit("lead-form", "lead-status", "Передаём заявку…", async (fo
   byId("open-my-leads").hidden = false;
 });
 
-async function loadCatalogSource() {
-  const labels = {
-    demo: "Демонстрационный каталог",
-    softline_sample: "Выборка товаров Softline",
-    softline_feed: "Фид Softline",
-    local_csv: "Каталог из загруженного CSV",
-    empty: "Каталог пока пуст",
-    unknown: "Источник каталога не указан",
-  };
-  try {
-    const { source, item_count: count, imported_at: importedAt } = await request("/catalog/status");
-    if (!Object.hasOwn(labels, source)) return;
-    const provenance = byId("catalog-source");
-    const details = [labels[source]];
-    if (Number.isSafeInteger(count) && source !== "empty") {
-      details.push(new Intl.NumberFormat("ru-RU").format(count) + " поз.");
-    }
-    const imported = new Date(importedAt);
-    if (importedAt && !Number.isNaN(imported.getTime())) {
-      details.push("Обновлён " + imported.toLocaleDateString("ru-RU"));
-    }
-    provenance.textContent = details.join(" · ");
-    provenance.hidden = false;
-  } catch {
-    // Поиск по каталогу доступен даже без сведений о его снимке.
-  }
-}
-
-loadCatalogSource();
-
 async function restoreChat() {
   try {
     const { items } = await request("/client/chat-history?include_times=true");

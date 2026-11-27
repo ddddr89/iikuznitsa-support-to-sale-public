@@ -1,10 +1,13 @@
 import gzip
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
-from app.catalog import Catalog
-from app.catalog_feed import open_feed, rows
+from app.catalog import Catalog, catalog_import_lock
+from app.catalog_feed import main, open_feed, rows
+from app.commercial import Commercial
 
 
 YML = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -65,3 +68,44 @@ class CatalogFeedTests(unittest.TestCase):
         self.assertEqual(self.catalog.status()["item_count"], 2)
         self.assertEqual(len(self.catalog.search("M27-X")), 2)
         self.assertEqual(self.catalog.search("OTHER"), [])
+
+    def test_remote_receipt_and_failures_preserve_last_snapshot_and_lead(self):
+        self.path.write_bytes(YML)
+        self.load(2)
+        commercial = Commercial(self.catalog.db_path)
+        commercial.init()
+        lead = commercial.create_lead("test@example.invalid", "Проверка каталога")
+        now = datetime.now(timezone.utc)
+        fresh = YML.replace(b"<yml_catalog>", f'<yml_catalog date="{now.isoformat()}">'.encode())
+        argv = ["catalog_feed", str(self.catalog.db_path), "--remote"]
+
+        def fetched(payload):
+            def save(_url, destination):
+                destination.write_bytes(payload)
+                return now.isoformat(), len(payload), "a" * 64
+            return save
+
+        with patch("sys.argv", argv), patch.dict("os.environ", {"SOFTLINE_FEED_URL": "https://fixture.invalid"}):
+            with patch("app.catalog_feed.download", side_effect=fetched(fresh.replace(b"250.75", b"300.75"))):
+                main()
+            receipt = self.catalog.remote_sync_status()
+            self.assertEqual(receipt["downloaded_at"], now.isoformat())
+            self.assertEqual(receipt["item_count"], 2)
+            self.assertEqual(self.catalog.status()["source"], "softline_remote_feed")
+            for failure in (
+                ValueError("Не удалось скачать выгрузку по HTTPS"),
+                fetched(fresh.rsplit(b"</offers>", 1)[0]),
+                fetched(fresh.split(b'<offer id="102"', 1)[0] + b"</offers></shop></yml_catalog>"),
+                fetched(fresh.replace(now.isoformat().encode(), b"2001-01-01T00:00:00+00:00")),
+            ):
+                with patch("app.catalog_feed.download", side_effect=failure), self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 1)
+                self.assertEqual(self.catalog.remote_sync_status(), receipt)
+                self.assertEqual(self.catalog.search("Bench monitor")[0]["price_minor"], 30075)
+                self.assertEqual(commercial.get_lead(lead["id"])["message"], "Проверка каталога")
+
+    def test_import_lock_blocks_a_concurrent_command(self):
+        with catalog_import_lock(self.catalog.db_path):
+            with self.assertRaisesRegex(ValueError, "уже выполняется"), catalog_import_lock(self.catalog.db_path):
+                self.fail("Повторный импорт получил замок")

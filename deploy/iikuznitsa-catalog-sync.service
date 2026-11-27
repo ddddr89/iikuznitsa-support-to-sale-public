@@ -1,0 +1,19 @@
+[Unit]
+Description=Support-to-Sale AI — HTTPS Softline catalog synchronization
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=demon
+Group=demon
+WorkingDirectory=/home/demon/projects/iikuznitsa-support-to-sale
+EnvironmentFile=-/home/demon/.config/iikuznitsa/catalog-sync.env
+ExecStart=/home/demon/projects/iikuznitsa-support-to-sale/.venv/bin/python -m app.catalog_feed .stand/catalog.sqlite3 --remote
+UMask=0077
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal

@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
+from fcntl import LOCK_EX, LOCK_NB, flock
 from datetime import datetime, timezone
 import csv
 from itertools import islice
@@ -24,6 +25,15 @@ QUERY_STOP_WORDS = {
 }
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS catalog_remote_sync (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    downloaded_at TEXT NOT NULL,
+    feed_date TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    item_count INTEGER NOT NULL,
+    imported_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS catalog_snapshot (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     source TEXT NOT NULL,
@@ -50,6 +60,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search USING fts5(
     tokenize='unicode61'
 );
 """
+
+
+@contextmanager
+def catalog_import_lock(database):
+    """Все команды импорта используют один замок для снимка."""
+    with Path(str(Path(database).resolve()) + ".import.lock").open("a") as lock:
+        try:
+            flock(lock, LOCK_EX | LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Другой импорт каталога уже выполняется") from None
+        yield
 
 
 class Catalog:
@@ -216,7 +237,14 @@ class Catalog:
                 expected_count=expected_count,
             )
 
-    def replace_snapshot(self, rows, *, source, expected_count=None) -> int:
+    def remote_sync_status(self):
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM catalog_remote_sync WHERE singleton = 1").fetchone()
+            if not row:
+                return None
+            return {key: row[key] for key in row.keys() if key != "singleton"}
+
+    def replace_snapshot(self, rows, *, source, expected_count=None, minimum_count=None, receipt=None) -> int:
         self.init()
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL").fetchone()
@@ -242,6 +270,9 @@ class Catalog:
                 raise ValueError("Снимок каталога пуст")
             if expected_count is not None and count != expected_count:
                 raise ValueError(f"Число SKU не совпало: ожидалось {expected_count}, получено {count}")
+            if minimum_count is not None and count < minimum_count:
+                raise ValueError(f"Снимок меньше допустимого: получено {count}, минимум {minimum_count}")
+            imported = datetime.now(timezone.utc).isoformat()
             connection.execute(
                 "INSERT INTO catalog_search(catalog_search) VALUES ('rebuild')"
             )
@@ -249,8 +280,13 @@ class Catalog:
                 """INSERT INTO catalog_snapshot VALUES (1, ?, ?, ?)
                    ON CONFLICT(singleton) DO UPDATE SET source=excluded.source,
                    item_count=excluded.item_count, imported_at=excluded.imported_at""",
-                (source, count, datetime.now(timezone.utc).isoformat()),
+                (source, count, imported),
             )
+            if receipt is not None:
+                connection.execute(
+                    "INSERT OR REPLACE INTO catalog_remote_sync VALUES (1, ?, ?, ?, ?, ?, ?)",
+                    (*receipt, count, imported),
+                )
             return count
 
 
@@ -287,7 +323,8 @@ def main() -> None:
     if source == "softline_feed" and (args.expected_count is None or args.expected_count < 1):
         parser.error("Для полного экспорта Softline укажите --expected-count")
     try:
-        count = Catalog(args.db).import_csv(args.csv, source=source, expected_count=args.expected_count)
+        with catalog_import_lock(args.db):
+            count = Catalog(args.db).import_csv(args.csv, source=source, expected_count=args.expected_count)
     except (OSError, ValueError, csv.Error, sqlite3.Error) as error:
         parser.exit(1, f"{error}\n")
     print(f"Загружено SKU: {count}")
