@@ -12,6 +12,8 @@ DIAGONAL = re.compile(
     r'\s*(?:дюйм\w*|["″]|-?\s*inch\b|in\b)'
 )
 REFRESH = re.compile(r"(?<!\w)(\d{2,3})\s*(?:гц|hz)\b")
+DISPLAY_FORMAT = re.compile(r"\b(?:4k|uhd|ips|3840\s*[x×х]\s*2160)\b")
+OTHER_SCREEN = re.compile(r"\b(?:телевизор\w*|смарт-тв|проектор\w*|tv|планшет\w*)\b")
 GAMING = re.compile(r"\b(?:игров\w*|gaming)\b")
 EXTERNAL = re.compile(r"\b(?:внешн\w*|портативн\w*|external|portable)\b")
 DRIVE_TYPE = re.compile(r"\b(?:ssd|hdd)\b")
@@ -181,6 +183,10 @@ def product_scope(query, previous=""):
     prior_mentions = [(match.start(), category) for category, pattern in STARTS if (match := re.search(pattern, prior))]
     if not mentions and not CATALOG_TOOL_REQUEST.search(current) and (dell := DELL_DISPLAY.search(current)):
         mentions = [(dell.start(), "monitor")]
+    # Диагональ вместе с параметром матрицы помогает распознать запрос без слова «монитор».
+    if not (mentions or OTHER_SCREEN.search(current) or CATALOG_TOOL_REQUEST.search(current)):
+        if (diagonal := DIAGONAL.search(current)) and (DISPLAY_FORMAT.search(current) or REFRESH.search(current)):
+            mentions = [(diagonal.start(), "monitor")]
     family = r"\b(?:elements portable|my book|dashdrive)\b"
     if not mentions and CAPACITY.search(current) and (drive_family := re.search(family, current)):
         mentions = [(drive_family.start(), "external")]

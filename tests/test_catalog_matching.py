@@ -173,6 +173,17 @@ class CatalogMatchingTests(TestCase):
         self.assertEqual(result["products"], [])
         self.assertIn("несовместимы", result["answer"])
 
+    def test_implicit_monitor_category_still_checks_price_and_display_specs(self):
+        scope = product_scope("Ищу Philips 27 дюймов 4K IPS USB-C с зарядкой от 65 Вт до 20 500 ₽")
+        self.assertEqual(scope.category, "monitor")
+        item = dict(name="Philips 27 дюймов 4K", category="Мониторы",
+                    description="IPS USB-C 65 Вт", price_minor=2010000, url="")
+        self.assertTrue(scope.matches(item))
+        self.assertFalse(scope.matches({**item, "name": "Philips 27 дюймов Full HD"}))
+        self.assertFalse(scope.matches({**item, "description": "IPS USB-C 45 Вт"}))
+        self.assertFalse(scope.matches({**item, "price_minor": 2050001}))
+        self.assertIsNone(product_scope("Нужен телевизор Philips 27 дюймов 4K IPS"))
+
     def test_exact_samsung_model_with_more_than_one_number_block(self):
         scope = product_scope("Покажи монитор Samsung LC34G55TWWIXCI")
         self.assertTrue(scope.matches(dict(name='Samsung LC34G55TWWIXCI 34"', category="Мониторы",
