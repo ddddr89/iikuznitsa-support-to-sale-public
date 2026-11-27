@@ -25,6 +25,7 @@ fi
 export APP_DB_PATH="$stand/catalog.sqlite3"
 export APP_KNOWLEDGE_DB="$stand/knowledge.sqlite3"
 export APP_CHAT_PER_MINUTE="${APP_CHAT_PER_MINUTE:-30}"
+export APP_MODEL_USAGE_LOG="${APP_MODEL_USAGE_LOG:-$stand/model-usage.log}"
 export APP_CHAT_PER_SESSION_PER_MINUTE="${APP_CHAT_PER_SESSION_PER_MINUTE:-12}"
 export APP_REQUIRE_LEAD_SESSION="${APP_REQUIRE_LEAD_SESSION:-1}"
 materials="${APP_MATERIALS_DIR:-/home/demon/Данные}"

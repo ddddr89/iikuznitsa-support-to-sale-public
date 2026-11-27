@@ -1,0 +1,60 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest import TestCase
+from unittest.mock import patch
+
+from app.ai import MAX_CONTEXT_BYTES, MAX_OUTPUT_TOKENS, _json_size, bounded_context, reply
+from app.catalog import Catalog
+from app.catalog_advice import safe_commercial_answer
+from app.commercial import Commercial
+from app.knowledge import Knowledge
+from app.main import Chat, create_app
+
+
+class CommercialGuardTests(TestCase):
+    def test_generated_commercial_claims_use_only_rechecked_catalog_facts(self):
+        with TemporaryDirectory() as directory:
+            db = Path(directory) / "db.sqlite"
+            Catalog(db).import_csv("data/demo.csv")
+            Commercial(db).init()
+            Knowledge(db).init()
+            with patch.dict("os.environ", {"APP_KNOWLEDGE_DB": str(db)}):
+                app = create_app(db)
+            chat = next(r.endpoint for r in app.routes if r.path == "/api/v1/chat")
+            claims = ("DEMO-MON-01 есть в наличии за 1 000 ₽. Доставим завтра. "
+                      "Совместим с любой системой; лицензия включена.")
+            with patch("app.main.reply", return_value={
+                "provider": "yandex", "answer": claims, "actions": [{"type": "route_n8n", "status": "done"}]
+            }):
+                result = chat(Chat(message="Уточните цену артикула DEMO-MON-01"),
+                              SimpleNamespace(cookies={}))
+            self.assertEqual(result["products"][0]["price_minor"], 2399000)
+            self.assertIn("23 990 ₽", result["answer"])
+            self.assertIn("подтвердит менеджер", result["answer"])
+            for term in ("1 000 ₽", "Доставим завтра", "любой системой", "лицензия включена"):
+                self.assertNotIn(term, result["answer"])
+
+    def test_unknown_conditions_offer_handoff_and_unrelated_answer_is_retained(self):
+        result = safe_commercial_answer("Старт", "Совместим со всеми версиями.", [])
+        self.assertIn("Не удалось подтвердить", result)
+        self.assertIn("менеджеру", result)
+        self.assertIsNone(safe_commercial_answer("Как открыть чат?", "Нажмите на вкладку «Чат».", []))
+
+    def test_context_budget_and_n8n_usage_log_exclude_personal_content(self):
+        messages = [{"question": "а" * 1800, "answer": "б" * 3500}] * 4
+        self.assertLessEqual(_json_size(bounded_context("Запрос", [], [], messages)), MAX_CONTEXT_BYTES)
+        with patch.dict("os.environ", {"N8N_WEBHOOK_URL": "http://example.invalid",
+                                      "N8N_WEBHOOK_SECRET": "fixture-secret"}, clear=True), patch(
+            "app.ai.post_json", return_value={"provider": "yandex", "answer": "Ответ",
+                                             "tool_status": "done", "usage": {"input_tokens": 120,
+                                                                             "output_tokens": 32}}
+        ) as post, self.assertLogs("uvicorn.error", "INFO") as capture:
+            result = reply("Личное сообщение", [], history=messages)
+        self.assertEqual(result["provider"], "yandex")
+        self.assertLessEqual(_json_size(post.call_args.args[1]), MAX_CONTEXT_BYTES)
+        line = capture.output[0]
+        self.assertIn("calls=2 input=120 output=32 partial=True", line)
+        self.assertNotIn("Личное сообщение", line)
+        self.assertNotIn("fixture-secret", line)
+        self.assertEqual(MAX_OUTPUT_TOKENS, 650)

@@ -191,3 +191,25 @@ def scoped_answer(scope, products, message, context):
         detail, title, url = VERIFIED_DETAILS[evidence[0]]
         return f"Подходит {item_text(selected)}. {detail}", products, [{"title": title, "url": url}]
     return f"Подходит {item_text(selected)}.", products, []
+
+
+# Для этих тем модель выбирает кандидатов, а итоговые факты формирует приложение.
+COMMERCIAL_TOPIC = re.compile(
+    r"₽|\b(?:цен[а-я]*|стоимост|стоит|рубл|налич|склад|остат|достав|постав|срок|"
+    r"совмест|поддержива|подойд|лицензи|подписк|скидк|гаранти|запуст|установк|отправ|работает на)|"
+    r"\b(?:price|cost|stock|shipping|delivery|compatible|license|licence|subscription)\b|"
+    r"\b\d+\s*(?:штук|шт\.|дней|часов|мест)\b",
+    re.IGNORECASE,
+)
+
+
+def safe_commercial_answer(message, answer, products):
+    """Подменяет коммерческую прозу модели проверенной карточкой или уточнением."""
+    if not (COMMERCIAL_TOPIC.search(message) or COMMERCIAL_TOPIC.search(answer)):
+        return None
+    if not products:
+        return ("Не удалось подтвердить коммерческие условия по каталогу. "
+                "Уточните артикул, версию или конфигурацию либо обратитесь к менеджеру.")
+    facts = "\n".join(f"• {item_text(product)}" for product in products)
+    return ("Данные товарного каталога:\n" + facts +
+            "\n\nНаличие, сроки поставки, совместимость и условия лицензирования подтвердит менеджер.")

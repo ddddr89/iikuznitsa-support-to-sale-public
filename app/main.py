@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.ai import reply
 from app.catalog import Catalog
-from app.catalog_advice import advisory, scoped_answer
+from app.catalog_advice import advisory, safe_commercial_answer, scoped_answer
 from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
 from app.documents import package_documents, render_pdf
@@ -284,6 +284,16 @@ def create_app(db_path=None):
                 if url and url not in seen and url in result["answer"]:
                     seen.add(url)
                     sources.append({"title": item["title"], "url": url})
+        tool_products = result.pop("products", [])
+        if result["provider"] in {"yandex", "openai"}:
+            products = recommended_products(catalog, [*tool_products, *products], result["answer"])
+            safe_answer = safe_commercial_answer(body.message, result["answer"], products)
+            if safe_answer is not None:
+                result["answer"] = safe_answer
+                result["actions"].append({"type": "commercial_claims_check", "status": "done"})
+                sources = []
+        elif result["provider"] == "knowledge":
+            products = []
         actions = [{"type": "knowledge_search", "status": "done"}]
         if searched:
             actions.insert(0, {"type": "catalog_search", "status": "done"})
@@ -324,11 +334,6 @@ def create_app(db_path=None):
             if owner:
                 result["escalation"]["id"] = lead["id"]
             actions.append({"type": "lead_escalation", "status": "done"})
-        tool_products = result.pop("products", [])
-        if result["provider"] in {"yandex", "openai"}:
-            products = recommended_products(catalog, [*tool_products, *products], result["answer"])
-        elif result["provider"] == "knowledge":
-            products = []
         return {
             "products": products,
             **result,

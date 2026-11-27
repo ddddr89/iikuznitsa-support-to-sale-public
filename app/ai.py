@@ -2,14 +2,20 @@
 
 import base64
 import json
+import logging
 import os
 import sqlite3
 from collections.abc import Callable
+from functools import lru_cache
 from http.client import HTTPException
+from logging.handlers import RotatingFileHandler
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 MAX_RESPONSE_BYTES = 131_072
+MAX_MODEL_PAYLOAD_BYTES = 28_000
+MAX_CONTEXT_BYTES = 12_000
+MAX_OUTPUT_TOKENS = 650
 YANDEX_URL = "https://ai.api.cloud.yandex.net/v1/responses"
 OPENAI_URL = "https://api.openai.com/v1/responses"
 SYSTEM_PROMPT = (
@@ -66,7 +72,7 @@ def post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
 def _cards(products):
     return [
         {
-            "sku": product["sku"],
+            "sku": product["sku"][:200],
             "name": product["name"][:240],
             "category": product["category"][:160],
             "description": product["description"][:500],
@@ -74,6 +80,65 @@ def _cards(products):
         }
         for product in products[:5]
     ]
+
+
+def _json_size(value):
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def bounded_context(message, products, knowledge, history):
+    """Оставляет свежий контекст в консервативном лимите UTF-8, не подрезая запрос."""
+    context = {"message": message, "products": _cards(products),
+               "knowledge": list(knowledge), "history": list(history)}
+    while _json_size(context) > MAX_CONTEXT_BYTES:
+        for field in ("history", "knowledge", "products"):
+            if context[field]:
+                context[field].pop(0 if field == "history" else -1)
+                break
+        else:
+            raise ValueError("Model context exceeds size limit")
+    return context
+
+
+@lru_cache(maxsize=1)
+def usage_logger(path):
+    logger = logging.getLogger("uvicorn.error")
+    if not path:
+        return logger
+    try:
+        handler = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    except OSError:
+        return logger
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    isolated = logging.Logger("model-usage", logging.INFO)
+    isolated.addHandler(handler)
+    return isolated
+
+
+def record_usage(response, route, calls):
+    """Пишет только числовые счётчики ответа; без текста, заголовков и идентификаторов."""
+    usage = response.get("usage")
+    fields = []
+    for field in ("input_tokens", "output_tokens"):
+        value = usage.get(field) if isinstance(usage, dict) else None
+        fields.append(value if type(value) is int and 0 <= value <= 1_000_000 else None)
+    usage_logger(os.getenv("APP_MODEL_USAGE_LOG")).info(
+        "model_usage route=%s calls=%s input=%s output=%s partial=%s",
+                   route, calls, *fields, calls != 1 or None in fields)
+
+
+def call_model(url, payload, headers):
+    if _json_size(payload) > MAX_MODEL_PAYLOAD_BYTES:
+        raise ValueError("Model payload exceeds size limit")
+    try:
+        response = post_json(url, payload, headers, timeout=8)
+    except PROVIDER_ERRORS:
+        if url == YANDEX_URL:
+            record_usage({}, "direct", 1)
+        raise
+    if url == YANDEX_URL:
+        record_usage(response, "direct", 1)
+    return _output(response)
 
 
 def _output(response):
@@ -96,7 +161,7 @@ def _send_model(url, model, headers, message, products, actions,
         "model": model,
         "store": False,
         "instructions": SYSTEM_PROMPT,
-        "max_output_tokens": 650,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
         "input": [{
             "role": "user",
             "content": json.dumps({
@@ -110,7 +175,7 @@ def _send_model(url, model, headers, message, products, actions,
         payload["tool_choice"] = "required" if required_tool else "auto"
         payload["parallel_tool_calls"] = False
 
-    output = _output(post_json(url, payload, headers, timeout=8))
+    output = call_model(url, payload, headers)
     calls = [item for item in output if item.get("type") == "function_call"]
     selected = None
     if calls:
@@ -149,7 +214,7 @@ def _send_model(url, model, headers, message, products, actions,
             "output": json.dumps(_cards(found), ensure_ascii=False),
         }]
         payload["tool_choice"] = "none"
-        output = _output(post_json(url, payload, headers, timeout=8))
+        output = call_model(url, payload, headers)
         if any(item.get("type") == "function_call" for item in output):
             raise ValueError("Tool call limit exceeded")
     elif required_tool:
@@ -190,13 +255,21 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
           knowledge=(), history=()) -> dict:
     """Возвращает текст, источник, трассу маршрута и карточки при наличии."""
     actions = []
+    try:
+        context = bounded_context(message, products, knowledge, history)
+    except ValueError:
+        return {"answer": "Запрос слишком объёмный для модели. Сократите сообщение.",
+                "provider": "catalog", "actions": actions}
+    knowledge, history = context["knowledge"], context["history"]
+    allowed_skus = {card["sku"] for card in context["products"]}
+    model_products = [product for product in products if product["sku"] in allowed_skus]
     url = os.getenv("N8N_WEBHOOK_URL")
     secret = os.getenv("N8N_WEBHOOK_SECRET")
 
     if url and secret:
         try:
             result = post_json(
-                url, {"message": message, "products": _cards(products), "knowledge": knowledge, "history": history},
+                url, context,
                 webhook_headers(secret), timeout=27,
             )
             provider = result.get("provider")
@@ -205,6 +278,8 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
                 raise ValueError("Invalid webhook provider")
             actions.append({"type": "route_n8n", "status": "done"})
             tool_status = result.get("tool_status")
+            if provider == "yandex":
+                record_usage(result, "n8n", 2 if tool_status in ("done", "error") else 1)
             if tool_status in ("done", "error"):
                 actions.append({"type": "tool_catalog_search", "status": tool_status})
             actions.append({"type": f"model_{provider}", "status": "done"})
@@ -222,13 +297,14 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
                 response["products"] = list(selected.values())[:5]
             return response
         except PROVIDER_ERRORS:
+            record_usage({}, "n8n", "unknown")
             actions.append({"type": "route_n8n", "status": "error"})
 
     yandex_key, folder = os.getenv("YANDEX_API_KEY"), os.getenv("YANDEX_FOLDER_ID")
     if yandex_key and folder:
         try:
             answer, selected = _send_yandex(
-                yandex_key, folder, message, products, actions, search,
+                yandex_key, folder, message, model_products, actions, search,
                 knowledge=knowledge, history=history,
             )
         except PROVIDER_ERRORS:
@@ -245,7 +321,7 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
         try:
             answer, _ = _send_model(
                 OPENAI_URL, "gpt-5.4-mini", {"Authorization": f"Bearer {openai_key}"},
-                message, products, actions, knowledge=knowledge, history=history,
+                message, model_products, actions, knowledge=knowledge, history=history,
             )
         except PROVIDER_ERRORS:
             actions.append({"type": "model_openai", "status": "error"})
