@@ -16,12 +16,18 @@ GAMING = re.compile(r"\b(?:игров\w*|gaming)\b")
 EXTERNAL = re.compile(r"\b(?:внешн\w*|портативн\w*|external|portable)\b")
 DRIVE_TYPE = re.compile(r"\b(?:ssd|hdd)\b")
 BUDGET = re.compile(
-    r"(?:(?:до|бюджет\w*|за|не дороже)\s*[:—-]?\s*)"
+    r"(?:(?:до|бюджет\w*|за|не дороже|максимум)\s*[:—-]?\s*)"
     r"(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?)(?:\s*(тыс|к)\b\.?)?"
     r"\s*(?:₽|руб(?:лей|ля|ль)?\b|р\.)"
 )
 CONFUSABLES = str.maketrans("авсенкморстху", "abcehkmopctxy")
-MODEL = re.compile(r"\b[a-z]{1,6}\d{3,}[a-z][a-z0-9]*\b")
+MODEL = re.compile(r"\b(?:[a-z]{1,6}\d{2,}[a-z][a-z0-9]*|\d{2,}[a-z]\d[a-z0-9]+)\b")
+MODEL_DETAIL = re.compile(
+    r"\b(?:[a-z]{1,9}\d{1,}[a-z0-9]*|\d{2,}[a-z][a-z0-9]+)(?:-[a-z0-9]+)*\b"
+)
+SKU_REFERENCE = re.compile(r"\b(?:артикул\w*|код\w*|sku)\s*[:№#]?\s*(\d{4,12})\b")
+DRIVE_NAMES = ("western digital", "elements portable", "my book", "dashdrive",
+               "seagate", "samsung", "adata", "netac", "kingston")
 CATEGORIES = {
     "monitor": ("Мониторы", "Монитор", "Monitors", "Monitor"),
     "external": ("Внешние HDD", "Внешние SSD", "Внешние накопители",
@@ -166,6 +172,9 @@ def product_scope(query, previous=""):
     prior = normalize_codes(previous)
     mentions = [(match.start(), category) for category, pattern in STARTS if (match := re.search(pattern, current))]
     prior_mentions = [(match.start(), category) for category, pattern in STARTS if (match := re.search(pattern, prior))]
+    family = r"\b(?:elements portable|my book|dashdrive)\b"
+    if not mentions and CAPACITY.search(current) and (drive_family := re.search(family, current)):
+        mentions = [(drive_family.start(), "external")]
     if not mentions and not prior_mentions:
         return None
     category = min(mentions or prior_mentions)[1]
@@ -179,6 +188,10 @@ def product_scope(query, previous=""):
     requirements = [evidence for request, evidence in REQUIREMENTS.get(category, ()) if re.search(request, text)]
     if category in {"monitor", "external"} and re.search(USB_C, text):
         requirements.append(USB_C)
+    if category in {"external", "ssd"}:
+        for name in DRIVE_NAMES:
+            if re.search(rf"\b{re.escape(name)}\b", text):
+                requirements.append(rf"\b{re.escape(name)}\b")
     if category == "external":
         usb = re.search(r"\busb\s*(\d\.\d)\b", text)
         if usb:

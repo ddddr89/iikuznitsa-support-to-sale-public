@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.ai import reply
 from app.catalog import Catalog
 from app.catalog_advice import advisory, scoped_answer
-from app.catalog_matching import product_scope
+from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
 from app.documents import render_pdf
 from app.knowledge import Knowledge
@@ -61,16 +61,20 @@ def render_documents(quote, kind):
 def recommended_products(catalog, candidates, answer):
     skus = list(dict.fromkeys(item["sku"] for item in candidates))
     current = catalog.get_many(skus)
-    answer = answer.casefold()
+    answer = normalize_codes(answer)
+    answer_models = {match[0]: match.start() for match in MODEL_DETAIL.finditer(answer)}
     positions = []
     for sku in skus:
         item = current.get(sku)
         if item is None:
             continue
         exact = re.search(rf"(?<![\w-]){re.escape(sku.casefold())}(?![\w-])", answer)
-        name_at = answer.find(item["name"].casefold())
-        if exact or name_at >= 0:
-            positions.append((exact.start() if exact else name_at, item))
+        name = normalize_codes(item["name"])
+        name_at = answer.find(name)
+        model_at = min((answer_models[code] for code in MODEL_DETAIL.findall(name)
+                        if code in answer_models and len(code) >= 5), default=-1)
+        if exact or name_at >= 0 or model_at >= 0:
+            positions.append((exact.start() if exact else name_at if name_at >= 0 else model_at, item))
     return [item for _, item in sorted(positions, key=lambda entry: entry[0])][:5]
 
 

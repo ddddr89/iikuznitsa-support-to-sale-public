@@ -22,8 +22,14 @@ VERIFIED_DETAILS = {
 def advisory(message, context):
     current = normalize(message)
     full = normalize(context)
-    if re.search(r"\b(?:api[- ]?ключ|токен\w*)\b", current) and re.search(r"\b(?:покаж|выда|раскро)", current):
+    private_data = r"\b(?:api[- ]?ключ\w*|токен\w*|парол\w*|чуж\w*\s+заявк\w*|данн\w*\s+других\s+клиент\w*|имен[а-я]*\s+покупател\w*)\b"
+    disclosure = r"\b(?:покаж|выда|раскро|расскаж|сообщ|перечисл|назов|хочу)"
+    if re.search(private_data, current) and re.search(disclosure, current):
         return "Ключи и данные других клиентов недоступны. Свои обращения можно посмотреть во вкладке «Мои заявки».", []
+    if re.search(r"\bкак\s+оформить\b", current) and re.search(r"\bлицензи\w*\b", current) and "организац" in current:
+        return ("Для оформления лицензий на организацию укажите нужный продукт, количество, срок и тип закупки "
+                "(новая лицензия или продление). Менеджер проверит условия приобретения и запросит реквизиты организации.",
+                [{"title": "Условия оформления лицензий на организацию", "url": "https://store.softline.ru/delivery_info/"}])
     if re.search(r"\bddr[45]\b", current) and len(set(re.findall(r"\bddr[45]\b", current))) > 1:
         return ("DDR4 и DDR5 несовместимы. Если плата поддерживает только DDR4, DDR5 устанавливать нельзя. "
                 "Уточните модель платы и необходимый объём. По ним можно проверить форм-фактор, допустимую ёмкость и ECC."), []

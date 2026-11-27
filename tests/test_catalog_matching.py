@@ -171,3 +171,34 @@ class CatalogMatchingTests(TestCase):
                            SimpleNamespace(cookies={}))
         self.assertEqual(result["products"], [])
         self.assertIn("несовместимы", result["answer"])
+
+    def test_exact_samsung_model_with_more_than_one_number_block(self):
+        scope = product_scope("Покажи монитор Samsung LC34G55TWWIXCI")
+        self.assertTrue(scope.matches(dict(name='Samsung LC34G55TWWIXCI 34"', category="Мониторы",
+                                           description="", url="", price_minor=1)))
+        self.assertFalse(scope.matches(dict(name='Samsung S27CG550EI 27"', category="Мониторы",
+                                            description="", url="", price_minor=1)))
+
+    def test_drive_brand_family_and_maximum_price_are_joint_filters(self):
+        scope = product_scope("Western Digital Elements Portable внешний HDD 4TB максимум 23000 ₽")
+        exact = dict(name="Внешний HDD Western Digital Elements Portable 4TB", category="Внешние HDD",
+                     description="HDD, 4 ТБ", url="", price_minor=2209300)
+        self.assertTrue(scope.matches(exact))
+        self.assertFalse(scope.matches({**exact, "name": "Внешний HDD ADATA 4TB"}))
+        self.assertFalse(scope.matches({**exact, "price_minor": 2300001}))
+
+    def test_recommendation_matches_model_despite_inflected_and_abbreviated_answer(self):
+        from app.main import recommended_products
+        stored = self.catalog.get("dell")
+        similar = self.catalog.get("dell-similar")
+        cards = recommended_products(self.catalog, [similar, stored], "Dеll U2424H — чёрный монитор.")
+        self.assertEqual([p["sku"] for p in cards], ["dell"])
+
+
+    def test_named_external_family_without_explicit_category(self):
+        scope = product_scope("Сколько стоит Western Digital My Book 6TB?")
+        self.assertEqual(scope.category, "external")
+        self.assertTrue(scope.matches(dict(name="Western Digital My Book 6 TB", category="Внешние HDD",
+                                           description="HDD, 6 ТБ", url="", price_minor=1)))
+        self.assertFalse(scope.matches(dict(name="Western Digital Elements 6 TB", category="Внешние HDD",
+                                            description="HDD, 6 ТБ", url="", price_minor=1)))

@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from urllib.parse import urlsplit
 
-from app.catalog_matching import CATEGORIES, normalize_codes, product_scope
+from app.catalog_matching import CATEGORIES, SKU_REFERENCE, normalize_codes, product_scope
 
 FIELDS = ("sku", "name", "category", "description", "url", "price_minor", "currency")
 MAX_PRICE_MINOR = (2**53 - 1) // (50 * 999)
@@ -95,6 +95,13 @@ class Catalog:
                 return aliases
 
             scope = scope or product_scope(q)
+            reference = SKU_REFERENCE.search(q)
+            if reference:
+                row = connection.execute("SELECT * FROM catalog_products WHERE sku = ?",
+                                         (reference[1],)).fetchone()
+                if row is None or offset or (scope and not scope.matches(row)):
+                    return []
+                return [dict(row)]
             if scope:
                 categories = CATEGORIES[scope.category]
                 placeholders = ", ".join("?" for _ in categories)
