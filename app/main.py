@@ -21,11 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.ai import reply
-from app.automatic_documents import document_quantity_followup, document_request
+from app.automatic_documents import document_quantity_followup, document_request, quantity_in, recently_shown
 from app.catalog import Catalog
 from app.catalog_advice import (
-    DELIVERY, advisory, checked_model_answer, compare_monitor_models, delivery_details_followup, price_text,
-    purchase_with_delivery, scoped_answer,
+    DELIVERY, advisory, checked_model_answer, compare_monitor_models, delivery_details_followup, document_confirmation,
+    price_text, purchase_with_delivery, quantity_label, scoped_answer,
 )
 from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
@@ -266,7 +266,7 @@ def create_app(db_path=None):
                 if global_limit or session_limit:
                     raise HTTPException(429, "Лимит запросов к помощнику", {"Retry-After": "60"})
                 chat_times.append((now, owner))
-        trusted_history = commercial.chat_history(owner) if owner else []
+        trusted_history = commercial.chat_history(owner, include_context=True) if owner else []
         incoming_history = trusted_history if owner else [turn.model_dump() for turn in body.history]
         active = active_turns(body.message, incoming_history)
         previous = active[-1]["question"] if active else ""
@@ -288,6 +288,7 @@ def create_app(db_path=None):
         document_handoff = False
         delivery_handoff = None
         consultation_subject = None
+        selection = None
         delivery = purchase_with_delivery(body.message, catalog)
         if operator_requested:
             result = {"answer": "Ответ менеджера появится в этом чате.", "provider": "catalog", "actions": []}
@@ -295,6 +296,8 @@ def create_app(db_path=None):
             result = {"answer": "Хорошо, исключим эту позицию. Назовите другую модель или параметры нового подбора.",
                       "provider": "catalog", "actions": []}
         elif (document := document_request(requested_documents, trusted_history, catalog)) is not None:
+            if document.sku and not document.handoff:
+                selection = {"sku": document.sku, "quantity": document.quantity}
             if not owner:
                 answer = "Откройте клиентский чат, чтобы подготовить документы в своей сессии."
             elif document.missing:
@@ -312,9 +315,7 @@ def create_app(db_path=None):
                 )
                 quote = commercial.create_quote(lead["id"], [item], render_documents, catalog_pricing=True)
                 documents = {**quote, "lead_id": lead["id"]}
-                answer = (f"Готовы коммерческое предложение и счёт на {item['quantity']} шт. "
-                          f"товара с артикулом {item['sku']}. Сумма по каталогу — {price_text(quote['total_minor'])}. "
-                          "Наличие и условия поставки требуют подтверждения.")
+                answer = document_confirmation(product, item["quantity"])
             result = {"answer": answer, "provider": "catalog",
                       "actions": [{"type": "documents_prepared", "status": "done"}] if documents else []}
             if delivery and document.sku:
@@ -334,8 +335,23 @@ def create_app(db_path=None):
                       "actions": [{"type": reference["kind"], "status": "done"}]}
             if reference.get("url"):
                 sources = [{"title": reference["title"], "url": reference["url"]}]
-        elif (quantity_answer := document_quantity_followup(body.message, trusted_history, catalog)):
-            result = {"answer": quantity_answer, "provider": "catalog", "actions": []}
+        elif (quantity_update := document_quantity_followup(body.message, trusted_history, catalog)):
+            selected, count = quantity_update
+            selection = {"sku": selected["sku"], "quantity": count}
+            price = selected["price_minor"]
+            answer = (f"Пересчитал: {quantity_label(selected, count)} — {price_text(count * price)}."
+                      if price is not None else f"Учту {quantity_label(selected, count)}. Цена по запросу.")
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif re.fullmatch(r"(?:а\s+)?(?:сколько стоит|какая цена|по какой цене)[?!.]?", current) and (
+            prior_selection := recently_shown(catalog, trusted_history, None, set())
+        )[0]:
+            selected, count = prior_selection
+            selection = {"sku": selected["sku"], "quantity": count}
+            price = selected["price_minor"]
+            answer = f"За штуку — {price_text(price)}." if price is not None else "Цена по запросу."
+            if price is not None and count and count > 1:
+                answer += f" За {quantity_label(selected, count)} — {price_text(count * price)}."
+            result = {"answer": answer, "provider": "catalog", "actions": []}
         elif owner and delivery_details_followup(body.message, trusted_history) and commercial.add_delivery_details(owner, body.message):
             result = {"answer": "Добавил данные в обращение. Менеджер уточнит стоимость и дату доставки."
                                 "\n\nСтатус обращения: ожидает ответа менеджера.",
@@ -420,7 +436,13 @@ def create_app(db_path=None):
         elif model_unavailable:
             result["answer"] += "\n\nОткройте клиентский чат, чтобы передать вопрос менеджеру."
         if owner:
-            commercial.record_turn(owner, body.message, result["answer"], quote_id=documents["id"] if documents else None)
+            if selection is None and products and (len(products) == 1 or (
+                scope and scope.model and all(scope.matches(item) for item in products)
+            )):
+                _, count = quantity_in(current)
+                selection = {"sku": products[0]["sku"], "quantity": count}
+            commercial.record_turn(owner, body.message, result["answer"], quote_id=documents["id"] if documents else None,
+                                   product_context=selection)
         if documents:
             result["documents"] = documents
         if confirmed:

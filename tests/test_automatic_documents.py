@@ -28,17 +28,19 @@ class AutomaticDocumentsTests(unittest.TestCase):
         self.known = turn("Нужен Dell U2424H", "Нашёл Dell U2424H, артикул 465223.")
 
     def test_uses_server_card_and_standalone_quantity_then_document_intent(self):
-        quantity = document_quantity_followup("Три штуки", [self.known], self.catalog)
-        self.assertIn("465223", quantity)
+        product, quantity = document_quantity_followup("Три штуки", [self.known], self.catalog)
+        self.assertEqual((product["sku"], quantity), ("465223", 3))
         self.assertIsNone(document_request("Три штуки", [self.known], self.catalog))
-        plan = document_request("Подготовьте счёт", [self.known, turn("Три штуки", quantity)], self.catalog)
+        recent = {**turn("Три штуки", "Пересчитал: 3 монитора — 78 519 ₽."),
+                  "product_context": {"sku": product["sku"], "quantity": quantity}}
+        plan = document_request("Подготовьте счёт", [self.known, recent], self.catalog)
         self.assertEqual((plan.sku, plan.quantity, plan.missing), ("465223", 3, None))
         self.assertEqual(plan.product["price_minor"], 2617300)
 
     def test_explicit_sku_then_quantity_after_clarification(self):
         initial = "Сформируйте КП, артикул 465223"
         plan = document_request(initial, [], self.catalog)
-        self.assertIn("количество товара", plan.missing)
+        self.assertIn("Сколько штук", plan.missing)
         clarified = document_request("3", [turn(initial, plan.missing)], self.catalog)
         self.assertEqual((clarified.sku, clarified.quantity, clarified.missing), ("465223", 3, None))
 
@@ -82,7 +84,7 @@ class AutomaticDocumentsTests(unittest.TestCase):
             with self.subTest(amount=amount):
                 plan = document_request(f"Подготовьте счёт, артикул 465223, {amount}", [], self.catalog)
                 self.assertIsNone(plan.quantity)
-                self.assertIn("количество товара", plan.missing)
+                self.assertIn("Сколько штук", plan.missing)
 
     def test_howto_and_cancellation_are_not_issuance(self):
         for question in ("Как подготовить счёт?", "Что нужно для получения документов?",

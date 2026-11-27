@@ -80,6 +80,9 @@ class Commercial:
                 )
             """)
             db.execute("CREATE INDEX IF NOT EXISTS session_turns_owner ON session_turns(owner, id)")
+            turn_fields = {field["name"] for field in db.execute("PRAGMA table_info(session_turns)")}
+            if "product_context" not in turn_fields:
+                db.execute("ALTER TABLE session_turns ADD COLUMN product_context TEXT")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS session_turn_documents (
                     turn_id INTEGER PRIMARY KEY REFERENCES session_turns(id) ON DELETE CASCADE,
@@ -157,25 +160,30 @@ class Commercial:
                 SELECT 1 FROM demo_sessions WHERE owner = ? AND expires_at > ?
             """, (owner, datetime.now(timezone.utc).isoformat())).fetchone() is not None
 
-    def chat_history(self, owner, include_times=False):
+    def chat_history(self, owner, include_times=False, *, include_context=False):
         with self.connection() as db:
             turns = [dict(row) for row in db.execute("""
-                SELECT question, answer, created_at, quote_id
+                SELECT question, answer, created_at, quote_id, product_context
                 FROM session_turns LEFT JOIN session_turn_documents ON turn_id = id
                 WHERE owner = ? ORDER BY id
             """, (owner,))]
         for turn in turns:
+            selection = turn.pop("product_context")
+            if include_context and selection:
+                turn["product_context"] = json.loads(selection)
             if (quote_id := turn.pop("quote_id")) is not None:
                 turn["documents"] = {"id": quote_id}
             if not include_times:
                 turn.pop("created_at")
         return turns
 
-    def record_turn(self, owner, question, answer, *, quote_id=None):
+    def record_turn(self, owner, question, answer, *, quote_id=None, product_context=None):
         with self.connection() as db:
             turn = db.execute("""
-                INSERT INTO session_turns (owner, question, answer, created_at) VALUES (?, ?, ?, ?)
-            """, (owner, question, answer, datetime.now(timezone.utc).isoformat())).lastrowid
+                INSERT INTO session_turns (owner, question, answer, created_at, product_context)
+                VALUES (?, ?, ?, ?, ?)
+            """, (owner, question, answer, datetime.now(timezone.utc).isoformat(),
+                  json.dumps(product_context) if product_context else None)).lastrowid
             if quote_id is not None:
                 db.execute("INSERT INTO session_turn_documents VALUES (?, ?)", (turn, quote_id))
             db.execute("""

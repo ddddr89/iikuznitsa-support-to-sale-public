@@ -139,7 +139,25 @@ def price_text(minor):
 
 
 def item_text(item):
-    return f'{item["name"]}, артикул {item["sku"]} — {price_text(item["price_minor"])}'
+    price = price_text(item["price_minor"])
+    return f'{item["name"]}\n' + (f"За штуку — {price}" if item["price_minor"] is not None else "Цена по запросу")
+
+
+def quantity_label(item, count):
+    if normalize(item["category"]) not in {"монитор", "мониторы", "monitor", "monitors"}:
+        return f"{count} шт."
+    last = count % 10
+    if 11 <= count % 100 <= 14 or last not in (1, 2, 3, 4):
+        return f"{count} мониторов"
+    return f"{count} " + ("монитор" if last == 1 else "монитора")
+
+
+def document_confirmation(item, count):
+    name = item["name"]
+    amount = quantity_label(item, count)
+    if "монитор" in amount and (model := MODEL.search(name.casefold())):
+        name = re.sub(r"^монитор\s+|\bTechnologies\s+", "", name[:model.end()], flags=re.IGNORECASE)
+    return f"Готово! КП и счёт на {amount} {name}."
 
 
 def purchase_with_delivery(message, catalog):
@@ -162,7 +180,7 @@ def purchase_with_delivery(message, catalog):
         opening = f"В каталоге есть {item_text(selected)}."
         if quantity and selected["price_minor"] is not None:
             total = price_text(selected["price_minor"] * quantity)
-            opening += f" По снимку каталога за {count} — {total} без доставки."
+            opening += f"\nЗа {count} — {total} без доставки."
         elif not quantity:
             opening += " Уточните количество, чтобы рассчитать стоимость товаров."
     address = re.search(r"\b(?:адрес|улица|ул\.|дом|пункт выдачи|пвз)\b", current)
@@ -197,12 +215,12 @@ def compare_monitor_models(question, catalog):
         if found is None:
             return "Уточните артикулы обеих моделей, чтобы сравнить подтверждённые карточки.", []
         items.append(found)
-    lines = [f"• {item_text(item)}. {item['description']}" for item in items]
+    lines = ["\n".join(part for part in (item_text(item), item["description"]) if part) for item in items]
     a, b = items
     if a["price_minor"] is not None and b["price_minor"] is not None:
         difference = abs(a["price_minor"] - b["price_minor"])
-        lines.append(f"Разница по снимку каталога — {price_text(difference)}.")
-    return "\n".join(lines), items
+        lines.append(f"Разница в цене — {price_text(difference)}.")
+    return "\n\n".join(lines), items
 
 
 def scoped_answer(scope, products, message, context):
@@ -253,8 +271,8 @@ def scoped_answer(scope, products, message, context):
         _, quantity = quantity_in(normalize_codes(message))
         if quantity and selected["price_minor"] is not None:
             total = price_text(selected["price_minor"] * quantity)
-            answer += f" По снимку каталога за {quantity} шт. — {total}."
-        return answer + " Наличие нужного количества и срок поставки подтвердит менеджер.", products, []
+            answer += f"\nЗа {quantity} шт. — {total}."
+        return answer + "\n\nЦену, наличие и срок поставки уточним при оформлении.", products, []
     selected = products[0]
     evidence = verified_models(selected)
     if evidence and evidence[0] in VERIFIED_DETAILS:
@@ -273,8 +291,8 @@ def safe_commercial_answer(message, answer, products):
     if normalize(message.strip()).rstrip("?") == "как открыть чат" and answer == CHAT_NAVIGATION:
         return None
     if not products:
-        return ("Не удалось подтвердить коммерческие условия по каталогу. "
-                "Уточните артикул, версию или конфигурацию либо обратитесь к менеджеру.")
+        return ("Не удалось подтвердить условия. Подскажите модель или нужную конфигурацию. "
+                "Если нужна помощь, передам вопрос менеджеру.")
     facts = "\n".join(f"• {item_text(product)}" for product in products)
     return ("Данные товарного каталога:\n" + facts +
             "\n\nНаличие, сроки поставки, совместимость и условия лицензирования подтвердит менеджер.")

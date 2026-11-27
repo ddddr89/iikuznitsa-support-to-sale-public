@@ -25,7 +25,11 @@ PRODUCT_COUNT = (r"монитор\w*|ноутбук\w*|накопител\w*|д�
                  r"видеокарт\w*|принтер\w*|планшет\w*|сервер\w*|ssd|hdd")
 QUANTITY = re.compile(rf"(?<![\w.,+\-])({AMOUNT})\s*(?:штук\w*|шт\.?|единиц\w*|{PRODUCT_COUNT})\b")
 LABELLED_QUANTITY = re.compile(rf"\bколичество\s*[:—-]?\s*({AMOUNT})(?![\w.,])")
-QUANTITY_ONLY = re.compile(rf"(?:нужн(?:ы|о)\s+|хочу\s+|возьму\s+|количество\s*[:—-]?\s*)?({AMOUNT})(?:\s*(?:штук\w*|шт\.?|единиц\w*))?[.!]?")
+QUANTITY_ONLY = re.compile(
+    rf"(?:(?:нужн(?:ы|о)|хочу|возьму|тогда|теперь|давайте|"
+    rf"(?:поменяйте|измените)(?: количество)? на)\s+|количество\s*[:—-]?\s*)?"
+    rf"({AMOUNT})(?:\s*(?:штук\w*|шт\.?|единиц\w*|{PRODUCT_COUNT}))?[.!]?"
+)
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,10 @@ def recently_shown(catalog, history, sku, models):
         question = normalize_codes(turn["question"])
         answer = turn["answer"]
         present, count = quantity_in(question, standalone=bool(QUANTITY_ONLY.fullmatch(question)))
-        references = explicit_references(answer)
+        selection = turn.get("product_context")
+        if selection and not quantity_seen:
+            count = selection.get("quantity")
+        references = {selection["sku"]} if selection else explicit_references(answer)
         if references and not answer.startswith(FOLLOW_UP_PREFIXES):
             candidates = [item for ref in references if (item := catalog_item(catalog, ref))]
             if sku:
@@ -124,7 +131,8 @@ def document_request(message, trusted_history, catalog):
     if not explicit:
         product = shown
         if pending and not product:
-            previous_references = explicit_references(trusted_history[-1]["answer"])
+            selection = trusted_history[-1].get("product_context")
+            previous_references = {selection["sku"]} if selection else explicit_references(trusted_history[-1]["answer"])
             previous_references |= explicit_references(trusted_history[-1]["question"])
             if len(previous_references) == 1:
                 product = catalog_item(catalog, next(iter(previous_references)))
@@ -139,21 +147,21 @@ def document_request(message, trusted_history, catalog):
             fields = "один корректный артикул товара" + (" и количество" if quantity is None else "")
         return DocumentRequest(None, quantity, f"{FOLLOW_UP} укажите {fields}.", None)
     if quantity is None:
-        return DocumentRequest(sku, None, f"{FOLLOW_UP} укажите количество товара по артикулу {sku} (от 1 до 999).", product)
+        return DocumentRequest(sku, None, f"{FOLLOW_UP} уточните количество. Сколько штук нужно?", product)
     if product["price_minor"] is None:
         return DocumentRequest(sku, quantity, "Цена товара по запросу. Её проверит менеджер.", product, True)
     return DocumentRequest(sku, quantity, None, product)
 
 
 def document_quantity_followup(message, trusted_history, catalog):
-    """Подтверждает количество для однозначной карточки, без выдачи документов."""
+    """Возвращает выбранную позицию и новое количество без повторного подбора."""
     text = normalize_codes(message).strip()
     if not (match := QUANTITY_ONLY.fullmatch(text)):
         return None
-    if not QUANTITY.search(text) and not LABELLED_QUANTITY.search(text):
-        return None
     count = number(match[1])
-    product, _ = recently_shown(catalog, trusted_history, None, set())
+    product, previous_count = recently_shown(catalog, trusted_history, None, set())
+    if previous_count is None and not QUANTITY.search(text) and not LABELLED_QUANTITY.search(text):
+        return None
     if count is None or product is None:
         return None
-    return f"Для товара по артикулу {product['sku']} учту количество: {count} шт."
+    return product, count

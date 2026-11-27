@@ -160,7 +160,7 @@ class ContestTests(unittest.TestCase):
         result = chat("Три штуки")
         docs = result["documents"]
         self.assertEqual(docs["total_minor"], 7197000)
-        self.assertIn("Готовы коммерческое предложение и счёт", result["answer"])
+        self.assertIn("Готово! КП и счёт", result["answer"])
         self.assertNotIn("проект", result["answer"].lower())
         self.assertNotIn("escalation", result)
         self.assertEqual(chat(question + ", 3 штуки")["documents"]["id"], docs["id"])

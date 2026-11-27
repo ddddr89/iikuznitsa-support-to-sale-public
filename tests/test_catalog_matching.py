@@ -86,7 +86,7 @@ class CatalogMatchingTests(TestCase):
         with patch("app.main.reply") as model:
             disk = self.chat(Chat(message="Внешний диск на 1 ТБ"), request)
             self.assertEqual(disk["products"][0]["sku"], "drive1")
-            self.assertIn("артикул drive1", disk["answer"])
+            self.assertIn(self.catalog.get("drive1")["name"], disk["answer"])
             self.assertIn("2 ₽", disk["answer"])
             monitor = self.chat(Chat(message="Игровой монитор 23–24 дюйма", history=[
                 Turn(question="Внешний диск на 1 ТБ", answer=disk["answer"])
@@ -141,7 +141,7 @@ class CatalogMatchingTests(TestCase):
             Turn(question="Нужен монитор Dell U2424Н, три штуки", answer=first["answer"]),
         ]), request)
         self.assertEqual(second["products"][0]["sku"], "dell")
-        self.assertIn("Наличие нужного количества", second["answer"])
+        self.assertIn("наличие и срок поставки уточним", second["answer"])
 
     def test_named_model_and_order_total_ignore_previous_monitor_requirements(self):
         from app.catalog_advice import price_text
@@ -155,7 +155,7 @@ class CatalogMatchingTests(TestCase):
             model.assert_not_called()
         self.assertEqual([p["sku"] for p in result["products"]], ["dell"])
         unit = self.catalog.get("dell")["price_minor"]
-        self.assertIn(f"за 3 шт. — {price_text(unit * 3)}", result["answer"])
+        self.assertIn(f"За 3 шт. — {price_text(unit * 3)}", result["answer"])
         self.assertNotIn("escalation", result)
         conflicting = self.chat(Chat(message="Есть монитор Dell U2424H с 4K?"), request)
         self.assertEqual(conflicting["products"], [])
@@ -321,7 +321,7 @@ class CatalogMatchingTests(TestCase):
         model.assert_not_called()
         self.assertEqual([item["sku"] for item in result["products"]], ["dell-p"])
         self.assertIn("В каталоге есть", result["answer"])
-        self.assertIn("Наличие нужного количества и срок поставки подтвердит менеджер", result["answer"])
+        self.assertIn("наличие и срок поставки уточним", result["answer"])
         self.assertNotIn("Есть в наличии", result["answer"])
         self.assertIsNone(product_scope("Вызови поиск по каталогу для Dell P2425HE."))
 
@@ -377,7 +377,7 @@ class CatalogMatchingTests(TestCase):
             result = self.chat(Chat(message=question), request)
             self.assertEqual([item["sku"] for item in result["products"]], ["dell"])
             total = self.catalog.get("dell")["price_minor"] * 3
-            self.assertIn(f"за 3 шт. — {price_text(total)} без доставки", result["answer"])
+            self.assertIn(f"За 3 шт. — {price_text(total)} без доставки", result["answer"])
             self.assertIn("Укажите почтовый индекс или адрес", result["answer"])
             self.assertNotIn("Оплатить прямо в чате нельзя", result["answer"])
             lead_id = result["escalation"]["id"]
@@ -429,7 +429,7 @@ class CatalogMatchingTests(TestCase):
         follow = self.chat(Chat(message="А разница в цене?", history=[Turn(question=question, answer=result["answer"])]),
                            request)
         self.assertEqual([p["sku"] for p in follow["products"]], ["dell", "dell-similar"])
-        self.assertIn("Разница по снимку каталога", follow["answer"])
+        self.assertIn("Разница в цене", follow["answer"])
 
     def test_service_topic_does_not_reuse_catalog_or_prior_model_context(self):
         request = SimpleNamespace(cookies={})
@@ -441,6 +441,28 @@ class CatalogMatchingTests(TestCase):
         self.assertEqual(model.call_args.args[1], [])
         self.assertEqual(model.call_args.kwargs["history"], [])
         self.assertIsNone(model.call_args.kwargs["search"])
+
+    def test_recalculation_preserves_selected_product_without_repeat_search(self):
+        from hashlib import sha256
+        from app.catalog_advice import price_text
+        from app.main import SESSION_COOKIE
+
+        token = "C" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        initial = self.chat(Chat(message="Нужны два монитора Dell U2424HE"), request)
+        self.assertEqual([item["sku"] for item in initial["products"]], ["dell-similar"])
+        unit = initial["products"][0]["price_minor"]
+        self.assertIn(f"\nЗа штуку — {price_text(unit)}", initial["answer"])
+        with patch.object(Catalog, "search", side_effect=AssertionError("Повторный поиск")):
+            result = self.chat(Chat(message="Тогда три монитора"), request)
+            self.assertEqual(result["answer"], f"Пересчитал: 3 монитора — {price_text(unit * 3)}.")
+            self.assertEqual(result["products"], [])
+            documents = self.chat(Chat(message="Подготовьте счёт"), request)
+        self.assertEqual(documents["documents"]["total_minor"], unit * 3)
+        self.assertEqual(documents["answer"], "Готово! КП и счёт на 3 монитора Dell U2424HE.")
+        self.assertNotIn("product_context", self.commercial.chat_history(owner)[-1])
 
     def test_unknown_manager_sla_explains_how_to_check_existing_request(self):
         request = SimpleNamespace(cookies={})

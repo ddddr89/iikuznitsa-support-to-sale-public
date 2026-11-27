@@ -35,7 +35,7 @@ function addDocuments(message, documents) {
   if (!/^[a-f0-9]{32}$/.test(documents?.id ?? "")) return;
   const buttons = element("div", undefined, "row");
   const base = "/api/v1/client/quotes/" + documents.id;
-  for (const [path, title] of [["quote.pdf", "Коммерческое предложение PDF"], ["invoice.pdf", "Счёт PDF"]]) {
+  for (const [path, title] of [["quote.pdf", "КП"], ["invoice.pdf", "Счёт"]]) {
     const link = element("a", title, "secondary");
     link.href = base + "/" + path;
     buttons.append(link);
@@ -74,7 +74,7 @@ function renderAnswer(result, intent) {
     showProducts(catalogResults, result.products);
     status("search-status", result.products.length
       ? "Товары из последнего ответа помощника."
-      : "Помощник не предложил товары. Можно поискать по названию или артикулу.");
+      : "Введите название или артикул для поиска.");
   }
   conversation.scrollTop = answer.offsetTop - conversation.offsetTop;
 }
