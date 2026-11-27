@@ -313,6 +313,7 @@ def create_app(db_path=None):
         sources = []
         products = []
         searched = False
+        resolved_catalog_lookup = False
         documents = None
         document_handoff = False
         delivery_handoff = None
@@ -476,6 +477,9 @@ def create_app(db_path=None):
             searched = True
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif scope:
+            # Пустая выдача по определённым условиям завершает проверку каталога.
+            # Вопрос менеджеру остаётся отдельным действием клиента.
+            resolved_catalog_lookup = True
             query = continued_query or body.message
             candidates = [item for item in catalog.search(query, 5, scope=scope) if scope.matches(item)]
             searched = True
@@ -484,8 +488,8 @@ def create_app(db_path=None):
                 answer = "По уточнённым условиям не нашлось подтверждённого совпадения."
                 if scope.max_price is not None:
                     answer += f" Учёл бюджет до {price_text(int(scope.max_price))}."
-                if not suppress_manager and not state.lead:
-                    consultation_subject = state.query
+                if re.search(r"\bподтверд\w*\s+(?:интерфейс|разъем|разрешение|совместимость)\b", current):
+                    answer = "Подходящую позицию не нашёл, поэтому подтвердить характеристику конкретного товара пока нельзя. " + answer
             result = {"answer": answer, "provider": "catalog", "actions": []}
         else:
             catalog_allowed = not service_only and not (state.route and not new_route)
@@ -523,7 +527,8 @@ def create_app(db_path=None):
             r"нет (?:информации|подходящ\w* (?:позици|решени|товар)\w*))", answer, re.IGNORECASE,
         )) and bool(re.search(r"менеджер\w*", answer, re.IGNORECASE))
         needs_manager = operator_requested or document_handoff or delivery_handoff is not None or consultation_subject is not None or model_handoff or (
-            result["provider"] == "catalog" and any(text in answer for text in UNRESOLVED_CATALOG)
+            not resolved_catalog_lookup and result["provider"] == "catalog"
+            and any(text in answer for text in UNRESOLVED_CATALOG)
         )
         if service_only and consultation_subject and not operator_requested:
             # Справка не заменяет активную покупку. Обращение по справке

@@ -50,12 +50,14 @@ class ManagerDocumentsFlowTests(TestCase):
         self.assertEqual(self.store.manager_messages(self.owner, reply["id"]), [])
         self.assertEqual(self.store.manager_messages("other", 0), [])
 
-    def test_incomplete_catalog_answer_goes_to_manager_only_after_qualification(self):
+    def test_catalog_no_match_stays_in_chat_until_customer_requests_manager(self):
         first = self.chat(Chat(message="Нужна защита корпоративной почты на 50 сотрудников"), self.request)
         self.assertNotIn("escalation", first)
         result = self.chat(Chat(message="Нужен игровой монитор 24 дюйма, 144 Гц"), self.request)
-        self.assertEqual(result["escalation"]["status"], "escalated")
+        self.assertNotIn("escalation", result)
         self.assertEqual(result["products"], [])
+        handoff = self.chat(Chat(message="Позовите менеджера."), self.request)
+        self.assertEqual(handoff["escalation"]["status"], "escalated")
 
     def test_bundle_is_atomic_and_reuses_both_documents(self):
         lead = self.store.create_lead("test@example.invalid", "КП", owner=self.owner)

@@ -576,9 +576,12 @@ class CatalogMatchingTests(TestCase):
 
         too_low = ask("Нужен внутренний SSD 1 ТБ. Верхняя граница 1 рубль.")
         self.assertEqual(too_low["products"], [])
+        self.assertNotIn("escalation", too_low)
         confirmed = ask("Можете подтвердить интерфейс? SATA не подойдёт.")
         self.assertEqual(confirmed["products"], [])
         self.assertIn("Учёл бюджет", confirmed["answer"])
+        self.assertNotIn("escalation", confirmed)
+        self.assertIn("escalation", ask("Позовите менеджера."))
 
     def test_delivery_uses_confirmed_sku_and_new_quantity_without_repeating_the_search(self):
         from hashlib import sha256
