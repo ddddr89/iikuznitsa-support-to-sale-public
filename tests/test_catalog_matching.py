@@ -167,6 +167,15 @@ class CatalogMatchingTests(TestCase):
         self.assertEqual(second["products"], [])
         self.assertIn("Менеджер может проверить", second["answer"])
 
+    def test_people_count_routes_to_mail_advice_not_operator(self):
+        request = SimpleNamespace(cookies={})
+        with patch("app.main.reply") as model:
+            advice = self.chat(Chat(message="Нужна защита почты на 40 человек от фишинга."), request)
+            operator = self.chat(Chat(message="Нужна помощь менеджера."), request)
+            model.assert_not_called()
+        self.assertIn("Где размещена почта", advice["answer"])
+        self.assertIn("Позвать менеджера", operator["answer"])
+
     def test_ddr4_ddr5_compatibility_returns_no_unverified_modules(self):
         result = self.chat(Chat(message="Нужна оперативная память DDR5 для платы, которая поддерживает только DDR4"),
                            SimpleNamespace(cookies={}))
