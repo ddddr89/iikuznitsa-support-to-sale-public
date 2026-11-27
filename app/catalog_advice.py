@@ -1,14 +1,19 @@
 """Use catalog evidence and ask for the facts needed to qualify a recommendation."""
 
 import re
+from dataclasses import replace
 
 from app.automatic_documents import quantity_in
-from app.catalog_matching import OFFICE_ANNUAL, normalize, normalize_codes, verified_models
+from app.catalog_matching import MODEL, OFFICE_ANNUAL, SKU_REFERENCE, normalize, normalize_codes, product_scope, verified_models
 from app.knowledge import official_url
 
 MICROSOFT_365 = "https://www.microsoft.com/en-us/microsoft-365/business/no-teams-plans-and-pricing"
 WINDOWS_SERVER = "https://www.microsoft.com/licensing/guidance/Windows-Server-2025"
 DELIVERY = "https://store.softline.ru/delivery_info/"
+DELIVERY_REQUEST = re.compile(r"\b(?:достав\w*|привез\w*|привоз\w*|курьер\w*)\b")
+DELIVERY_INDEX = re.compile(r"\b(?:индекс\w*\s*[:№]?\s*)?(\d{6})\b")
+DELIVERY_DETAILS = re.compile(r"^(?:индекс\w*\b|почтовый индекс\b|[1-9]\d{5}(?!\d)|адрес\b|ул\.|"
+                              r"улица\b|пвз\b|пункт выдачи\b)")
 REPLY_SLA = re.compile(r"\b(?:срок\w* ответа|отвеча\w* на заявк\w*|ждать ответа)\b")
 VERIFIED_DETAILS = {
     "27e1n1900ae-01": ("Philips подтверждает IPS, 3840 × 2160 и зарядку USB-C до 65 Вт.",
@@ -89,12 +94,6 @@ def advisory(message, context):
                 "форм-фактора и ECC сообщите точную модель платы. До проверки не могу рекомендовать конкретный модуль."), []
     if "windows server" in full:
         return windows_server_advice(full)
-    if re.search(r"защит\w*[^.!?\n]*почт|фишинг|вредоносн\w* вложен", full) and "microsoft 365 для" not in full:
-        if "exchange online" in current:
-            return ("Для Exchange Online нужно подтвердить поддержку этой платформы, "
-                    "защиту от фишинга и вложений и объём лицензии. В каталоге нет подтверждённого совпадения по всем условиям. "
-                    "Менеджер может проверить варианты и условия закупки."), []
-        return "Где размещена почта и сколько почтовых ящиков нужно защитить? Нужна защита от фишинга, вредоносных вложений или обе?", []
     if re.search(r"резервн\w+\s+копирован|vsphere|esxi", full) and "vmware" in full:
         if re.search(r"\b(?:vsphere|esxi)\s*8\b", current):
             return ("Для подбора решения нужно подтвердить поддержку вашей редакции ESXi, резервное копирование "
@@ -123,8 +122,8 @@ def advisory(message, context):
         destination = f" для индекса {postal[1]}" if postal else " для Салехарда"
         return ("Интернет-магазин отправляет заказы по России транспортной компанией. Стоимость доставки"
                 + destination + " рассчитывается при оформлении заказа с учётом состава и региона. "
-                "Точную сумму и срок в этом чате подтвердить не могу; их можно проверить при оформлении или у менеджера. "
-                "Оплатить прямо в чате нельзя.",
+                "Для точной стоимости и даты доставки укажите адрес или пункт выдачи."
+                + (" Оплатить прямо в чате нельзя." if re.search(r"\bоплат\w*\b", current) else ""),
                 [{"title": "Условия доставки по России", "url": DELIVERY}])
     return None
 
@@ -141,6 +140,69 @@ def price_text(minor):
 
 def item_text(item):
     return f'{item["name"]}, артикул {item["sku"]} — {price_text(item["price_minor"])}'
+
+
+def purchase_with_delivery(message, catalog):
+    """Совмещает каталожный расчёт с передачей условий доставки на проверку."""
+    current = normalize_codes(message)
+    if not DELIVERY_REQUEST.search(current):
+        return None
+    scope = product_scope(message)
+    reference = SKU_REFERENCE.search(current)
+    if not (scope or reference):
+        return None
+    products = catalog.search(message, 5, scope=scope)
+    selected = products[0] if products and (reference or (scope and scope.model) or len(products) == 1) else None
+    _, quantity = quantity_in(current)
+    count = f"{quantity} шт." if quantity else "количество не указано"
+    if not selected:
+        opening = ("Выберите подходящую позицию из карточек." if products else
+                   "Для подбора укажите точную модель или артикул.")
+    else:
+        opening = f"В каталоге есть {item_text(selected)}."
+        if quantity and selected["price_minor"] is not None:
+            total = price_text(selected["price_minor"] * quantity)
+            opening += f" По снимку каталога за {count} — {total} без доставки."
+        elif not quantity:
+            opening += " Уточните количество, чтобы рассчитать стоимость товаров."
+    address = re.search(r"\b(?:адрес|улица|ул\.|дом|пункт выдачи|пвз)\b", current)
+    next_step = "Менеджер уточнит стоимость и дату доставки." if address else (
+        "Укажите адрес или пункт выдачи, чтобы менеджер рассчитал стоимость и дату доставки."
+        if DELIVERY_INDEX.search(current) else
+        "Укажите почтовый индекс или адрес, чтобы менеджер уточнил стоимость и дату доставки."
+    )
+    subject = f"Доставка: {selected['sku'] if selected else 'товар уточняется'}, {count}. {message}"
+    return opening, next_step, products, subject, selected["sku"] if selected else None
+
+
+def delivery_details_followup(message, trusted_history):
+    return bool(trusted_history and "Статус обращения: ожидает ответа менеджера." in trusted_history[-1]["answer"]
+                and "стоимость и дату доставки" in trusted_history[-1]["answer"]
+                and DELIVERY_DETAILS.search(normalize(message)))
+
+
+def compare_monitor_models(question, catalog):
+    normalized = normalize_codes(question)
+    if not re.search(r"\b(?:сравн\w*|отлича\w*|разниц\w*)\b", normalized):
+        return None
+    codes = list(dict.fromkeys(MODEL.findall(normalized)))
+    scope = product_scope(question)
+    if len(codes) != 2 or not scope or scope.category != "monitor":
+        return None
+    items = []
+    for code in codes:
+        matching_scope = replace(scope, model=code)
+        found = next((item for item in catalog.search(code, 10, scope=matching_scope)
+                      if matching_scope.matches(item)), None)
+        if found is None:
+            return "Уточните артикулы обеих моделей, чтобы сравнить подтверждённые карточки.", []
+        items.append(found)
+    lines = [f"• {item_text(item)}. {item['description']}" for item in items]
+    a, b = items
+    if a["price_minor"] is not None and b["price_minor"] is not None:
+        difference = abs(a["price_minor"] - b["price_minor"])
+        lines.append(f"Разница по снимку каталога — {price_text(difference)}.")
+    return "\n".join(lines), items
 
 
 def scoped_answer(scope, products, message, context):

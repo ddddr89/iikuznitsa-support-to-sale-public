@@ -18,12 +18,15 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, TableStyle
 
 
+PDF_FILENAMES = {"quote": "Коммерческое предложение.pdf", "invoice": "Счёт.pdf"}
+
+
 def package_documents(quote_pdf, invoice_pdf):
     """Упаковывает готовый комплект, не пересчитывая и не меняя PDF."""
     output = BytesIO()
     with ZipFile(output, "w") as bundle:
-        bundle.writestr("Коммерческое предложение.pdf", quote_pdf)
-        bundle.writestr("Проект счёта.pdf", invoice_pdf)
+        bundle.writestr(PDF_FILENAMES["quote"], quote_pdf)
+        bundle.writestr(PDF_FILENAMES["invoice"], invoice_pdf)
     return output.getvalue()
 
 
@@ -85,7 +88,7 @@ def branded_page(template, quote, style):
 
 def render_pdf(quote, kind):
     """Возвращает PDF КП или проекта счёта из одного снимка позиций."""
-    title = "Коммерческое предложение" if kind == "quote" else "Счёт на оплату · проект"
+    title = "Коммерческое предложение" if kind == "quote" else "Счёт"
     template_path = os.getenv("APP_QUOTE_TEMPLATE") if kind == "quote" else None
     output = BytesIO()
     font = document_font()
@@ -119,7 +122,7 @@ def render_pdf(quote, kind):
         seller = os.getenv("APP_SELLER_DETAILS", "").strip()
         if seller:
             story.append(Paragraph(escape(seller).replace("\n", "<br/>"), text))
-        story.append(Paragraph("Проект для проверки менеджером. Оплата по этому документу не предусмотрена.", text))
+        story.append(Paragraph("Документ для проверки менеджером. Оплата по этому документу не предусмотрена.", text))
     if quote.get("catalog_pricing"):
         story.append(Paragraph("Цены из снимка каталога. Наличие и условия поставки подлежат подтверждению.", text))
     story.append(Spacer(1, 12))

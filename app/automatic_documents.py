@@ -14,7 +14,8 @@ REFERENCE = re.compile(
     rf"\b(?:артикул\w*|sku|код товара|на товар)"
     rf"\s*[:№#]?\s*({SKU_TOKEN})\b", re.IGNORECASE,
 )
-FOLLOW_UP = "Для подготовки КП и проекта счёта"
+FOLLOW_UP = "Для подготовки КП и счёта"
+FOLLOW_UP_PREFIXES = (FOLLOW_UP, "Для подготовки КП и проекта счёта")
 SPECIAL_TERMS = re.compile(r"\b(?:скидк\w*|отсрочк\w*|рассрочк\w*|без ндс|ндс\s*\d+|"
                            r"(?:с учетом|включая) доставк\w*|поставк\w* к)\b")
 WORDS = {"один": 1, "одна": 1, "одну": 1, "два": 2, "две": 2, "три": 3, "четыре": 4,
@@ -78,7 +79,7 @@ def recently_shown(catalog, history, sku, models):
         answer = turn["answer"]
         present, count = quantity_in(question, standalone=bool(QUANTITY_ONLY.fullmatch(question)))
         references = explicit_references(answer)
-        if references and not answer.startswith(FOLLOW_UP):
+        if references and not answer.startswith(FOLLOW_UP_PREFIXES):
             candidates = [item for ref in references if (item := catalog_item(catalog, ref))]
             if sku:
                 candidates = [item for item in candidates if item["sku"] == sku]
@@ -88,7 +89,8 @@ def recently_shown(catalog, history, sku, models):
             if len(candidates) != 1:
                 return None, None
             return candidates[0], quantity if quantity_seen else count
-        if answer.startswith(FOLLOW_UP) or QUANTITY_ONLY.fullmatch(question):
+        if (answer.startswith((*FOLLOW_UP_PREFIXES, "Добавил данные в обращение."))
+                or QUANTITY_ONLY.fullmatch(question)):
             if present and not quantity_seen:
                 quantity_seen, quantity = True, count
             continue
@@ -103,7 +105,7 @@ def document_request(message, trusted_history, catalog):
         return None
     if re.search(r"\bне\s+(?:надо|нужно|хочу|готовьте|формируйте|выставляйте|отправляйте)\b", text):
         return None
-    pending = bool(trusted_history and trusted_history[-1]["answer"].startswith(FOLLOW_UP))
+    pending = bool(trusted_history and trusted_history[-1]["answer"].startswith(FOLLOW_UP_PREFIXES))
     explicit = explicit_references(message)
     prior_need_sku = pending and "артикул" in trusted_history[-1]["answer"]
     if prior_need_sku and re.fullmatch(SKU_TOKEN, text) and (

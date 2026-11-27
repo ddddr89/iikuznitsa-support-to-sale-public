@@ -263,7 +263,7 @@ class CatalogMatchingTests(TestCase):
             advice = self.chat(Chat(message="Нужна защита почты на 40 человек от фишинга."), request)
             operator = self.chat(Chat(message="Нужна помощь менеджера."), request)
             model.assert_not_called()
-        self.assertIn("Где размещена почта", advice["answer"])
+        self.assertIn("сколько почтовых ящиков", advice["answer"])
         self.assertIn("Позвать менеджера", operator["answer"])
 
     def test_ddr4_ddr5_compatibility_returns_no_unverified_modules(self):
@@ -359,8 +359,88 @@ class CatalogMatchingTests(TestCase):
         followup = "Цена доставки известна или её уточнит менеджер?"
         answer, _ = advisory(followup, question + "\n" + followup)
         self.assertIn("677000", answer)
-        self.assertIn("Точную сумму и срок в этом чате подтвердить не могу", answer)
-        self.assertIn("при оформлении или у менеджера", answer)
+        self.assertIn("укажите адрес или пункт выдачи", answer)
+        self.assertNotIn("Оплатить прямо в чате нельзя", answer)
+
+    def test_compound_purchase_keeps_product_total_and_delivery_in_shared_lead(self):
+        from hashlib import sha256
+        from app.catalog_advice import price_text
+        from app.main import SESSION_COOKIE
+
+        token = "A" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        question = ("Хочу купить три монитора Dell U2424H с доставкой в Салехард. "
+                    "Сколько точно будет стоить доставка и в какой день привезёте?")
+        with patch("app.main.reply") as model:
+            result = self.chat(Chat(message=question), request)
+            self.assertEqual([item["sku"] for item in result["products"]], ["dell"])
+            total = self.catalog.get("dell")["price_minor"] * 3
+            self.assertIn(f"за 3 шт. — {price_text(total)} без доставки", result["answer"])
+            self.assertIn("Укажите почтовый индекс или адрес", result["answer"])
+            self.assertNotIn("Оплатить прямо в чате нельзя", result["answer"])
+            lead_id = result["escalation"]["id"]
+            lead = self.commercial.get_lead(lead_id)
+            self.assertEqual(lead["sku"], "dell")
+            self.assertIn("3 шт.", lead["message"])
+            self.assertIn(question, lead["message"])
+            followup = self.chat(Chat(message="Индекс 629008"), request)
+            self.assertIn("Добавил данные в обращение", followup["answer"])
+            self.assertEqual(len(self.commercial.list_leads()), 1)
+            history = self.commercial.lead_detail(lead_id)["history"]
+            self.assertTrue(any(row["content"] == "Индекс 629008" for row in history))
+            model.assert_not_called()
+
+    def test_mail_slots_use_session_history_and_end_without_duplicate_lead(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        token = "B" * 43
+        self.commercial.create_session(sha256(token.encode()).hexdigest(), 600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        def chat(text):
+            return self.chat(Chat(message=text), request)
+
+        first = chat("В компании 40 сотрудников. Хотим защитить корпоративную почту от спама, "
+                     "фишинга и вредоносных вложений. Конкретный продукт не знаем. Что посоветуете?")
+        self.assertIn("сколько почтовых ящиков", first["answer"])
+        second = chat("Примерно 40 почтовых ящиков")
+        self.assertIn("Где размещена почта", second["answer"])
+        self.assertNotIn("сколько почтовых ящиков", second["answer"])
+        third = chat("Microsoft")
+        self.assertIn("Microsoft 365 или Exchange", third["answer"])
+        self.assertNotIn("escalation", third)
+        last = chat("Я не знаю")
+        self.assertEqual(last["products"], [])
+        lead = self.commercial.get_lead(last["escalation"]["id"])
+        for fact in ("Ящики: 40", "Microsoft", "спам, фишинг, вредоносные вложения"):
+            self.assertIn(fact, lead["message"])
+        self.assertNotIn("escalation", chat("Я не знаю"))
+        self.assertEqual(len(self.commercial.list_leads()), 1)
+        monitor = chat("Нужен Dell U2424H")
+        self.assertEqual([p["sku"] for p in monitor["products"]], ["dell"])
+
+    def test_named_monitor_comparison_keeps_both_models_and_excludes_old_card(self):
+        request = SimpleNamespace(cookies={})
+        question = "Сравните мониторы Dell U2424H и U2424HE"
+        result = self.chat(Chat(message=question), request)
+        self.assertEqual([p["sku"] for p in result["products"]], ["dell", "dell-similar"])
+        follow = self.chat(Chat(message="А разница в цене?", history=[Turn(question=question, answer=result["answer"])]),
+                           request)
+        self.assertEqual([p["sku"] for p in follow["products"]], ["dell", "dell-similar"])
+        self.assertIn("Разница по снимку каталога", follow["answer"])
+
+    def test_service_topic_does_not_reuse_catalog_or_prior_model_context(self):
+        request = SimpleNamespace(cookies={})
+        with patch("app.main.reply", return_value={"provider": "yandex", "answer": "Проверьте условия.", "actions": []}) as model:
+            result = self.chat(Chat(message="Что требуется для ЭДО?", history=[
+                Turn(question="Нужен Dell U2424H", answer="Артикул dell.")
+            ]), request)
+        self.assertEqual(result["products"], [])
+        self.assertEqual(model.call_args.args[1], [])
+        self.assertEqual(model.call_args.kwargs["history"], [])
+        self.assertIsNone(model.call_args.kwargs["search"])
 
     def test_unknown_manager_sla_explains_how_to_check_existing_request(self):
         request = SimpleNamespace(cookies={})

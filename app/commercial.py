@@ -267,6 +267,29 @@ class Commercial:
                 """, (lead_id, closure_reason, now))
         return self.lead_detail(lead_id)
 
+    def add_delivery_details(self, owner, message):
+        """Дополняет открытое обращение владельца данными для расчёта доставки."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            lead = db.execute("""
+                SELECT leads.id FROM leads JOIN lead_sessions ON leads.id = lead_sessions.lead_id
+                WHERE owner = ? AND leads.status IN ('escalated', 'in_progress')
+                  AND leads.message LIKE 'Доставка: %'
+                ORDER BY leads.created_at DESC, leads.id LIMIT 1
+            """, (owner,)).fetchone()
+            if not lead:
+                return False
+            latest = db.execute("""
+                SELECT content FROM lead_activity WHERE lead_id = ? AND role = 'client'
+                ORDER BY id DESC LIMIT 1
+            """, (lead["id"],)).fetchone()
+            if latest is None or latest["content"] != message:
+                db.execute("""
+                    INSERT INTO lead_activity (lead_id, role, content, created_at)
+                    VALUES (?, 'client', ?, ?)
+                """, (lead["id"], message, datetime.now(timezone.utc).isoformat()))
+            return True
+
     def get_lead(self, lead_id):
         with self.connection() as db:
             row = db.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()

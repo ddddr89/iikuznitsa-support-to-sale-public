@@ -215,7 +215,7 @@ quoteForm.addEventListener("submit", async (event) => {
   }
   const fields = quoteForm.querySelectorAll("input, button");
   fields.forEach((field) => field.disabled = true);
-  status("quote-status", "Формируем КП и проект счёта…");
+  status("quote-status", "Формируем коммерческое предложение и счёт…");
   try {
     const result = await request("/manager/quotes", { token, body: { lead_id: currentSelection.id, items: rows } });
     if (selected !== currentSelection || currentSession !== session) return;

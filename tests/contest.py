@@ -127,7 +127,7 @@ class ContestTests(unittest.TestCase):
             client_zip = response.read()
         for data in (raw, client_zip):
             with ZipFile(BytesIO(data)) as archive:
-                self.assertEqual(archive.namelist(), ["Коммерческое предложение.pdf", "Проект счёта.pdf"])
+                self.assertEqual(archive.namelist(), ["Коммерческое предложение.pdf", "Счёт.pdf"])
                 self.assertIsNone(archive.testzip())
                 for name, url in zip(archive.namelist(), (package["quote_pdf_url"], package["invoice_pdf_url"])):
                     pdf = archive.read(name)
@@ -137,7 +137,8 @@ class ContestTests(unittest.TestCase):
                     normalized = "".join(text.split())
                     self.assertRegex(text, r"(?m)^\s*DEMO-MON-01[^\n]*?\s+2\s+23\s+990,00\s+₽\s+47\s+980,00")
                     self.assertIn("47980,00", normalized)
-                    if name == "Проект счёта.pdf":
+                    if name == "Счёт.pdf":
+                        self.assertEqual(text.lstrip().splitlines()[0].strip(), "Счёт")
                         self.assertIn("Оплата по этому документу не предусмотрена", text)
 
 
@@ -159,6 +160,8 @@ class ContestTests(unittest.TestCase):
         result = chat("Три штуки")
         docs = result["documents"]
         self.assertEqual(docs["total_minor"], 7197000)
+        self.assertIn("Готовы коммерческое предложение и счёт", result["answer"])
+        self.assertNotIn("проект", result["answer"].lower())
         self.assertNotIn("escalation", result)
         self.assertEqual(chat(question + ", 3 штуки")["documents"]["id"], docs["id"])
         base = f"{BASE}{self.api}/client/quotes/{docs['id']}"

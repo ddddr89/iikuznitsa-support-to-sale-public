@@ -40,7 +40,7 @@ class QuoteTemplateTests(unittest.TestCase):
         self.assertIn("201,00 ₽", text)
         self.assertIn("НДС подтверждает менеджер", text)
         self.assertIn("проект для проверки менеджером", text)
-        self.assertIn("Счёт на оплату", self.pdf_text(invoice_pdf))
+        self.assertEqual(self.pdf_text(invoice_pdf).splitlines()[0], "Счёт")
 
     def test_multipage_template_keeps_all_rows_and_total(self):
         with patch.dict("os.environ", {"APP_QUOTE_TEMPLATE": str(self.template)}):
