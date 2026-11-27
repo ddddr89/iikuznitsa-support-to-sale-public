@@ -36,6 +36,7 @@ class CatalogMatchingTests(TestCase):
             ("unknown-watts", 'Монитор 27"', "Мониторы", '27" IPS 3840 × 2160, USB-C'),
             ("dell", 'Монитор Dell U2424H 23.8-inch', "Мониторы", '23.8"'),
             ("dell-similar", 'Монитор Dell U2424HE 23.8-inch', "Мониторы", '23.8"'),
+            ("dell-p", 'Монитор Dell Technologies P2425HE 23.8-inch', "Мониторы", '23.8"'),
             ("basic", "Microsoft 365 Бизнес базовый (на 1 рабочее место)", "Офисные пакеты программ Microsoft Office", ""),
             ("standard", "Microsoft 365 бизнес стандарт (лицензия 1 год), цена за 1 лицензию", "Офисные пакеты программ Microsoft Office", "Подписка"),
             ("poe", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports, PoE+"),
@@ -202,3 +203,64 @@ class CatalogMatchingTests(TestCase):
                                            description="HDD, 6 ТБ", url="", price_minor=1)))
         self.assertFalse(scope.matches(dict(name="Western Digital Elements 6 TB", category="Внешние HDD",
                                             description="HDD, 6 ТБ", url="", price_minor=1)))
+
+    def test_short_dell_monitor_query_returns_catalog_presence_not_stock(self):
+        request = SimpleNamespace(cookies={})
+        with patch("app.main.reply") as model:
+            result = self.chat(Chat(message="Dell P2425HE, нужен именно HE."), request)
+        model.assert_not_called()
+        self.assertEqual([item["sku"] for item in result["products"]], ["dell-p"])
+        self.assertIn("В каталоге есть", result["answer"])
+        self.assertIn("Наличие нужного количества и срок поставки подтвердит менеджер", result["answer"])
+        self.assertNotIn("Есть в наличии", result["answer"])
+        self.assertIsNone(product_scope("Вызови поиск по каталогу для Dell P2425HE."))
+
+    def test_windows_server_followup_consumes_known_parameters(self):
+        request = SimpleNamespace(cookies={})
+        question = "Windows Server: 8 работников и три ВМ. Что потребуется?"
+        initial = self.chat(Chat(message=question), request)
+        self.assertNotIn("количество виртуальных машин", initial["answer"])
+        self.assertNotIn("число пользователей или устройств", initial["answer"])
+        followup = self.chat(Chat(
+            message="Windows Server 2025, 2 CPU по 12 ядер, 3 ВМ, 8 пользователей, без RDS.",
+            history=[Turn(question=question, answer=initial["answer"])],
+        ), request)
+        self.assertIn("24 ядер за комплект", followup["answer"])
+        self.assertIn("на 48 ядер", followup["answer"])
+        self.assertIn("Менеджер может", followup["answer"])
+        self.assertEqual(followup["products"], [])
+
+    def test_documented_pickup_and_return_keep_customer_topic(self):
+        from app.catalog_advice import advisory
+
+        pickup, links = advisory("Можно забрать заказ самостоятельно и что взять для получения?", "")
+        self.assertIn("пункт выдачи", pickup)
+        self.assertIn("доверенность по форме М2", pickup)
+        self.assertEqual(links[0]["url"], "https://store.softline.ru/delivery_info/")
+        followup = "Если приобрели на юридическое лицо, где уточнить порядок?"
+        answer, _ = advisory(followup, "Где посмотреть правила обмена оборудования?\n" + followup)
+        self.assertIn("обмена или возврата", answer)
+        self.assertNotIn("бухгалтерские документы", answer)
+
+    def test_delivery_quote_remains_unconfirmed_after_postal_index(self):
+        from app.catalog_advice import advisory
+
+        question = "Доставляете в Якутск по индексу 677000?"
+        followup = "Цена доставки известна или её уточнит менеджер?"
+        answer, _ = advisory(followup, question + "\n" + followup)
+        self.assertIn("677000", answer)
+        self.assertIn("Точную сумму и срок в этом чате подтвердить не могу", answer)
+        self.assertIn("при оформлении или у менеджера", answer)
+
+    def test_unknown_manager_sla_explains_how_to_check_existing_request(self):
+        request = SimpleNamespace(cookies={})
+        question = "За сколько дней обычно отвечают на заявку?"
+        with patch("app.main.reply") as model:
+            first = self.chat(Chat(message=question), request)
+            second = self.chat(Chat(message="Если подтверждённого срока нет, что делать?", history=[
+                Turn(question=question, answer=first["answer"]),
+            ]), request)
+        model.assert_not_called()
+        self.assertIn("Мои заявки", second["answer"])
+        self.assertIn("повторно отправлять его не нужно", second["answer"])
+        self.assertNotIn("escalation", second)

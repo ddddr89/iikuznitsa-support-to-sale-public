@@ -25,6 +25,9 @@ MODEL = re.compile(r"\b(?:[a-z]{1,6}\d{2,}[a-z][a-z0-9]*|\d{2,}[a-z]\d[a-z0-9]+)
 MODEL_DETAIL = re.compile(
     r"\b(?:[a-z]{1,9}\d{1,}[a-z0-9]*|\d{2,}[a-z][a-z0-9]+)(?:-[a-z0-9]+)*\b"
 )
+# These Dell model families name a monitor even in short, category-free queries.
+DELL_DISPLAY = re.compile(r"\bdell(?: technologies)?\s+([pu]\d{4}[a-z][a-z0-9]*)\b")
+CATALOG_TOOL_REQUEST = re.compile(r"\b(?:вызови(?:те)?\s+поиск|инструмент\w*\s+поиск|поиск\w*\s+по\s+каталог\w*)\b")
 SKU_REFERENCE = re.compile(r"\b(?:артикул\w*|код\w*|sku)\s*[:№#]?\s*(\d{4,12})\b")
 DRIVE_NAMES = ("western digital", "elements portable", "my book", "dashdrive",
                "seagate", "samsung", "adata", "netac", "kingston")
@@ -113,6 +116,8 @@ def budget_limit(text):
 
 @dataclass(frozen=True)
 class ProductScope:
+    """Совместные ограничения запроса к цене, каталожной категории и характеристикам."""
+
     category: str
     capacity_gb: Decimal | None = None
     diagonal: tuple[Decimal, Decimal] | None = None
@@ -125,6 +130,7 @@ class ProductScope:
     watts: int | None = None
 
     def matches(self, item):
+        """Пропускает позицию, для которой подтверждены все заданные условия."""
         name, category, description = (normalize(item[key]) for key in ("name", "category", "description"))
         if category not in {normalize(value) for value in CATEGORIES[self.category]}:
             return False
@@ -168,10 +174,13 @@ class ProductScope:
 
 
 def product_scope(query, previous=""):
+    """Извлекает ограничения из запроса и применимого уточнения покупателя."""
     current = normalize_codes(query)
     prior = normalize_codes(previous)
     mentions = [(match.start(), category) for category, pattern in STARTS if (match := re.search(pattern, current))]
     prior_mentions = [(match.start(), category) for category, pattern in STARTS if (match := re.search(pattern, prior))]
+    if not mentions and not CATALOG_TOOL_REQUEST.search(current) and (dell := DELL_DISPLAY.search(current)):
+        mentions = [(dell.start(), "monitor")]
     family = r"\b(?:elements portable|my book|dashdrive)\b"
     if not mentions and CAPACITY.search(current) and (drive_family := re.search(family, current)):
         mentions = [(drive_family.start(), "external")]

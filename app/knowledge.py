@@ -42,7 +42,7 @@ class OfficialRedirect(HTTPRedirectHandler):
 
 
 class Sections(HTMLParser):
-    """Extract visible support paragraphs from the primary page content."""
+    """Извлекает видимый справочный текст из основного содержимого страницы."""
 
     heading_tags = {"h1", "h2", "h3", "h4"}
     blocks = heading_tags | {"p", "li", "td", "dt", "dd"}
@@ -119,6 +119,7 @@ def docx_links(path):
 
 
 def chat_topics(paths):
+    """Считает темы переписок и возвращает агрегаты без исходных реплик."""
     records = 0
     counts = [0] * len(TOPICS)
     for path in paths:
@@ -223,6 +224,7 @@ class Knowledge:
             return entry_id
 
     def search(self, message):
+        """Подбирает подтверждённый ответ и до трёх справочных выдержек суммарно."""
         tokens = [
             word for word in dict.fromkeys(re.findall(r"[^\W_]+", message.lower()))
             if len(word) >= 3 and word not in STOPWORDS and not word.isnumeric()

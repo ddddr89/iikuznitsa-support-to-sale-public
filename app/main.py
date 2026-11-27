@@ -1,3 +1,5 @@
+"""HTTP API чата, каталога, контакта с менеджером и защищённых документов."""
+
 import os
 import re
 from collections import deque
@@ -145,6 +147,7 @@ def create_app(db_path=None):
     knowledge = Knowledge(os.getenv("APP_KNOWLEDGE_DB") or path)
 
     def session_owner(request: Request):
+        """Получает внутренний идентификатор только из действующей cookie-сессии."""
         owner = session_digest(request)
         return owner if owner and commercial.active_session(owner) else None
 
@@ -156,6 +159,23 @@ def create_app(db_path=None):
     chat_max = int(os.getenv("APP_CHAT_PER_MINUTE", "0"))
     chat_times = deque()
     chat_lock = Lock()
+    require_lead_session = os.getenv("APP_REQUIRE_LEAD_SESSION", "0") == "1"
+    lead_attempts = deque()
+    lead_lock = Lock()
+
+    def reserve_lead_slot(owner):
+        """Ограничивает попытки записи на публичном стенде одним общим окном."""
+        if not require_lead_session:
+            return True
+        with lead_lock:
+            now = monotonic()
+            while lead_attempts and lead_attempts[0][0] <= now - 60:
+                lead_attempts.popleft()
+            if len(lead_attempts) >= 30 or sum(key == owner for _, key in lead_attempts) >= 5:
+                return False
+            lead_attempts.append((now, owner))
+            return True
+
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -201,6 +221,11 @@ def create_app(db_path=None):
 
     @api.post("/api/v1/chat")
     def chat(body: Chat, request: Request):
+        """Возвращает ответ с карточками и создаёт обращение только для действующей сессии.
+
+        Каталог и подтверждённые ответы обрабатываются локально. Для обычной
+        консультации используется модель, а трасса обозначает фактический маршрут.
+        """
         if chat_max > 0:
             with chat_lock:
                 now = monotonic()
@@ -210,7 +235,7 @@ def create_app(db_path=None):
                     raise HTTPException(429, "Лимит запросов к помощнику", {"Retry-After": "60"})
                 chat_times.append(now)
         previous = body.history[-1].question if body.history else ""
-        # A follow-up with no new product category can refine the latest request.
+        # Уточнение без новой категории уточняет последний товарный запрос.
         earlier = "\n".join(item.question for item in reversed(body.history))
         scope = product_scope(body.message, earlier)
         context = f"{earlier}\n{body.message}"
@@ -268,11 +293,17 @@ def create_app(db_path=None):
         needs_manager = operator_requested or model_handoff or (
             result["provider"] == "catalog" and any(text in answer for text in UNRESOLVED_CATALOG)
         )
-        should_escalate = model_unavailable or (owner is not None and needs_manager)
+        wants_escalation = model_unavailable or needs_manager
+        should_escalate = owner is not None and wants_escalation and reserve_lead_slot(owner)
         if should_escalate:
             result["answer"] += "\n\nСтатус обращения: ожидает ответа менеджера."
+        elif wants_escalation and owner is not None:
+            result["answer"] = answer if not operator_requested else "Передать обращение пока не удалось."
+            result["answer"] += "\n\nДостигнут лимит обращений. Повторите попытку через минуту."
         elif operator_requested:
             result["answer"] = "Откройте форму «Позвать менеджера», чтобы отправить обращение."
+        elif model_unavailable:
+            result["answer"] += "\n\nОткройте клиентский чат, чтобы передать вопрос менеджеру."
         if owner:
             commercial.record_turn(owner, body.message, result["answer"])
         if confirmed:
@@ -301,11 +332,14 @@ def create_app(db_path=None):
 
     @api.post("/api/v1/leads", status_code=201)
     def create_lead(body: Lead, request: Request):
+        owner = session_owner(request)
+        if require_lead_session and owner is None:
+            raise HTTPException(403, "Откройте клиентский чат перед отправкой обращения")
         if body.sku and catalog.get(body.sku) is None:
             raise HTTPException(404, "Товар не найден")
-        return commercial.create_lead(
-            body.contact, body.message, body.sku, body.escalation, session_owner(request),
-        )
+        if not reserve_lead_slot(owner):
+            raise HTTPException(429, "Лимит обращений", {"Retry-After": "60"})
+        return commercial.create_lead(body.contact, body.message, body.sku, body.escalation, owner)
 
     @api.get("/api/v1/client/leads")
     def client_leads(request: Request, response: Response):
@@ -378,6 +412,7 @@ def create_app(db_path=None):
 
     @api.post("/api/v1/manager/quotes", status_code=201, dependencies=[Depends(require_manager)])
     def create_quote(body: Quote):
+        """Проверяет позиции каталога и передаёт один снимок строк двум PDF."""
         skus = [line.sku for line in body.items]
         if len(set(skus)) != len(skus):
             raise HTTPException(422, "Объедините количество для одинаковых артикулов")
@@ -415,6 +450,7 @@ def create_app(db_path=None):
         return pdf_response(quote_id, kind)
 
     def pdf_response(quote_id, kind, owner=None):
+        """Читает PDF после проверки владельца; старые снимки рендерит по запросу."""
         try:
             quote = commercial.get_quote(quote_id, owner)
         except KeyError as exc:

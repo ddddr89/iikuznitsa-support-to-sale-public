@@ -22,7 +22,7 @@ MAX_BYTES = 512 * 1024 * 1024
 
 @contextmanager
 def open_feed(path):
-    """Detect gzip by its signature because catalog export suffixes vary."""
+    """Определяет gzip по сигнатуре, поскольку расширение выгрузки может отличаться."""
     with path.open("rb") as raw:
         if raw.peek(2).startswith(b"\x1f\x8b"):
             with gzip.GzipFile(fileobj=raw) as stream:
@@ -60,7 +60,7 @@ def download(url, destination):
 
 
 def rows(file):
-    """Keep only the current offer and category names in memory."""
+    """Разбирает YML потоком, оставляя в памяти текущее предложение и справочник категорий."""
     parents = []
     categories = {}
     count = 0

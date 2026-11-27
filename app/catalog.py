@@ -71,6 +71,7 @@ class Catalog:
             connection.executescript(SCHEMA)
 
     def search(self, q: str, limit: int = 20, offset: int = 0, *, scope=None) -> list[dict]:
+        """Ищет по артикулу и ограничениям в одном снимке SQLite, при необходимости использует FTS."""
         raw_query = q.strip()
         q = normalize_codes(raw_query)
         with self._connect() as connection:
@@ -190,7 +191,7 @@ class Catalog:
             return {"source": "unknown" if count else "empty", "item_count": count, "imported_at": None}
 
     def import_csv(self, csv_path: str | Path, *, source="local_csv", expected_count=None) -> int:
-        """Replace the current catalog only after all rows and the index are valid."""
+        """Атомарно заменяет снимок после проверки всех строк и построения индекса."""
         with open(csv_path, encoding="utf-8-sig", newline="") as file:
             reader = csv.DictReader(file, strict=True)
             if len(reader.fieldnames or []) != len(FIELDS) or set(reader.fieldnames) != set(FIELDS):

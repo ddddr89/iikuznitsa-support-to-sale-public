@@ -6,6 +6,8 @@ from app.catalog_matching import OFFICE_ANNUAL, normalize, normalize_codes, veri
 
 MICROSOFT_365 = "https://www.microsoft.com/en-us/microsoft-365/business/no-teams-plans-and-pricing"
 WINDOWS_SERVER = "https://www.microsoft.com/licensing/guidance/Windows-Server-2025"
+DELIVERY = "https://store.softline.ru/delivery_info/"
+REPLY_SLA = re.compile(r"\b(?:срок\w* ответа|отвеча\w* на заявк\w*|ждать ответа)\b")
 VERIFIED_DETAILS = {
     "27e1n1900ae-01": ("Philips подтверждает IPS, 3840 × 2160 и зарядку USB-C до 65 Вт.",
                        "Характеристики Philips 27E1N1900AE/01",
@@ -19,7 +21,51 @@ VERIFIED_DETAILS = {
 }
 
 
+def windows_server_advice(full):
+    """Объясняет условную схему лицензирования и передаёт условия закупки на проверку."""
+    missing = []
+    version = re.search(r"\b20(?:16|19|22|25)\b", full)
+    sockets = re.search(r"\b(\d{1,2})\s*(?:cpu|процессор\w*)\s+по\s+(\d{1,3})\s*яд", full)
+    # An unqualified core count is informative but does not establish the socket minima.
+    total = re.search(r"\b(\d{1,3})\s*(?:физическ\w*\s+)?яд", full)
+    vms = re.search(r"\b(\d{1,3}|одна|две|три|четыре)\s+(?:виртуальн\w*\s+машин\w*|вм)\b", full)
+    if not version:
+        missing.append("версию Windows Server")
+    if not (total or sockets):
+        missing.append("число физических процессоров и ядер")
+    if not vms:
+        missing.append("количество виртуальных машин")
+    if not re.search(r"\b\d{1,5}\s+(?:пользовател\w*|сотрудник\w*|работник\w*|устройств\w*)\b", full):
+        missing.append("число пользователей или устройств")
+    if not re.search(r"\brds\b", full):
+        missing.append("нужен ли RDS")
+    if version and version[0] == "2025" and vms and (total or sockets):
+        vm_count = {"одна": 1, "две": 2, "три": 3, "четыре": 4}.get(vms[1])
+        if vm_count is None:
+            vm_count = int(vms[1])
+        if sockets and vm_count > 0:
+            cores = max(16, int(sockets[1]) * max(8, int(sockets[2])))
+            licenses = cores * ((vm_count + 1) // 2)
+            return (f"Если все {vm_count} ВМ работают на одном указанном сервере, сам хост используется только для "
+                    f"их размещения и управления, а схема основана на физических ядрах, для Standard нужно "
+                    f"покрыть {cores} ядер за комплект. На {vm_count} ВМ потребуется покрытие на {licenses} ядер. "
+                    "Лицензии доступа CAL проверяются отдельно. Не удалось подтвердить все параметры закупки "
+                    "и цену по каталогу. Менеджер может сверить условия поставки.",
+                    [{"title": "Руководство по лицензированию Windows Server 2025", "url": WINDOWS_SERVER}])
+        if vm_count == 2 and total and int(total[1]) == 16:
+            return ("Для двух виртуальных машин на одном полностью лицензированном 16-ядерном хосте "
+                    "рассмотрите Windows Server 2025 Standard с лицензированием по физическим ядрам и User CAL "
+                    "для пользователей без эквивалентных лицензий. Менеджер может проверить минимум на процессор, "
+                    "нужное число CAL, условия закупки и цену. Подтверждённого SKU 2025 в выдаче нет.",
+                    [{"title": "Руководство по лицензированию Windows Server 2025", "url": WINDOWS_SERVER}])
+    if missing:
+        return "Чтобы выбрать редакцию Windows Server и CAL, уточните " + ", ".join(missing) + ".", []
+    return ("Не удалось подтвердить все параметры лицензирования и цену по каталогу. "
+            "Менеджер может проверить редакцию и лицензии доступа по указанной конфигурации.", [])
+
+
 def advisory(message, context):
+    """Отвечает на справочные вопросы, когда есть подтверждённый сценарий."""
     current = normalize(message)
     full = normalize(context)
     private_data = r"\b(?:api[- ]?ключ\w*|токен\w*|парол\w*|чуж\w*\s+заявк\w*|данн\w*\s+других\s+клиент\w*|имен[а-я]*\s+покупател\w*)\b"
@@ -30,6 +76,9 @@ def advisory(message, context):
         return ("Для оформления лицензий на организацию укажите нужный продукт, количество, срок и тип закупки "
                 "(новая лицензия или продление). Менеджер проверит условия приобретения и запросит реквизиты организации.",
                 [{"title": "Условия оформления лицензий на организацию", "url": "https://store.softline.ru/delivery_info/"}])
+    if REPLY_SLA.search(current) or (REPLY_SLA.search(full) and re.search(r"\bсрок\w*\b", current)):
+        return ("Подтверждённого срока ответа у меня нет. Текущий статус и ответ менеджера можно проверить "
+                "во вкладке «Мои заявки». Если обращение уже ожидает ответа, повторно отправлять его не нужно.", [])
     if re.search(r"\bddr[45]\b", current) and len(set(re.findall(r"\bddr[45]\b", current))) > 1:
         return ("DDR4 и DDR5 несовместимы. Если плата поддерживает только DDR4, DDR5 устанавливать нельзя. "
                 "Уточните модель платы и необходимый объём. По ним можно проверить форм-фактор, допустимую ёмкость и ECC."), []
@@ -37,15 +86,7 @@ def advisory(message, context):
         return ("Нужен комплект памяти поколения, которое поддерживает плата. Для проверки допустимого объёма, "
                 "форм-фактора и ECC сообщите точную модель платы. До проверки не могу рекомендовать конкретный модуль."), []
     if "windows server" in full:
-        qualified = all(re.search(pattern, full) for pattern in (r"\b2025\b", r"\b16\s+яд", r"(?:две|2)\s+(?:виртуальн|вм)"))
-        if qualified:
-            return ("Для двух виртуальных машин на одном полностью лицензированном 16-ядерном хосте "
-                    "рассмотрите Windows Server 2025 Standard с лицензированием по физическим ядрам и User CAL "
-                    "для пользователей без эквивалентных лицензий. Уточнить нужное число CAL, условия "
-                    "закупки и цену может менеджер. Подтверждённого SKU 2025 в выдаче нет.",
-                    [{"title": "Руководство по лицензированию Windows Server 2025", "url": WINDOWS_SERVER}])
-        return ("Чтобы выбрать редакцию Windows Server и CAL, уточните версию, число физических процессоров "
-                "и ядер, количество ВМ, способ доступа пользователей и нужен ли RDS."), []
+        return windows_server_advice(full)
     if re.search(r"защит\w*[^.!?\n]*почт|фишинг|вредоносн\w* вложен", full) and "microsoft 365 для" not in full:
         if "exchange online" in current:
             return ("Для Exchange Online нужно подтвердить поддержку этой платформы, "
@@ -65,10 +106,24 @@ def advisory(message, context):
                     "Менеджер может проверить варианты на нужное число устройств."), []
         return ("Уточните редакцию Windows 11, нужно ли централизованное управление и требуется ли защита от "
                 "вымогателей. У вас уже есть лицензия, которую нужно продлить?"), []
-    if re.search(r"салехард|629008", full):
-        return ("Доставку в Салехард, её срок и стоимость нужно подтвердить по индексу и адресу. "
-                "Оплатить прямо в этом чате нельзя. Для организации менеджер может уточнить доставку и подготовить проект счёта.",
-                [{"title": "Условия оплаты и доставки Софтлайн", "url": "https://store.softline.ru/delivery_info/"}])
+    if re.search(r"самовывоз|забрать (?:свой )?заказ самостоятельно|пункт\w*\s+самовывоз", current):
+        return ("В интернет-магазине можно выбрать доставку в пункт выдачи. Пункт и часы его работы видны при "
+                "оформлении. Для получения физлицу нужен паспорт, представителю юрлица — документ, "
+                "удостоверяющий личность, и доверенность по форме М2. Доступность пункта проверьте при оформлении.",
+                [{"title": "Виды доставки и правила получения товара", "url": DELIVERY}])
+    if (re.search(r"\b(?:правил\w*|поряд\w*)\b.{0,30}\b(?:обмен\w*|возврат\w*)\b", current)
+            or re.search(r"\b(?:обмен\w*|возврат\w*)\b", full) and re.search(r"юридическ\w*\s+лиц\w*|юрлиц", current)):
+        return ("Порядок обмена или возврата смотрите в разделе «Получение, прием и возврат товара». "
+                "Для заказа на организацию условия по конкретному товару и комплекту документов уточнит менеджер.",
+                [{"title": "Получение, прием и возврат товара", "url": DELIVERY}])
+    postal = re.search(r"\bиндекс\w*\s*[:№]?\s*(\d{6})\b", full)
+    if (postal or re.search(r"салехард|629008", full)) and re.search(r"достав|индекс|цен\w*|стоимост", current):
+        destination = f" для индекса {postal[1]}" if postal else " для Салехарда"
+        return ("Интернет-магазин отправляет заказы по России транспортной компанией. Стоимость доставки"
+                + destination + " рассчитывается при оформлении заказа с учётом состава и региона. "
+                "Точную сумму и срок в этом чате подтвердить не могу; их можно проверить при оформлении или у менеджера. "
+                "Оплатить прямо в чате нельзя.",
+                [{"title": "Условия доставки по России", "url": DELIVERY}])
     return None
 
 
@@ -87,6 +142,7 @@ def item_text(item):
 
 
 def scoped_answer(scope, products, message, context):
+    """Формирует клиентский ответ по позициям, прошедшим каталожную проверку."""
     current, full = normalize(message), normalize(context)
     if scope.model and scope.model in normalize_codes(message) and scope.model not in current:
         return f"Возможно, вы имели в виду {scope.model.upper()} с латинской буквой. Подтвердите модель.", [], []

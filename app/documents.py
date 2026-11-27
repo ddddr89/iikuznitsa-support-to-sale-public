@@ -31,7 +31,7 @@ def rubles(minor):
 
 @lru_cache(maxsize=2)
 def template_branding(path, _modified_ns):
-    """Extract the letterhead and footer without importing the signature or seal."""
+    """Извлекает фирменные элементы шаблона без подписи и печати."""
     raster = subprocess.run(
         ["pdftoppm", "-f", "1", "-l", "1", "-r", "144", "-singlefile", "-png", str(path)],
         stdout=subprocess.PIPE,
@@ -74,6 +74,7 @@ def branded_page(template, quote, style):
 
 
 def render_pdf(quote, kind):
+    """Возвращает PDF КП или проекта счёта из одного снимка позиций."""
     title = "Коммерческое предложение" if kind == "quote" else "Счёт на оплату · проект"
     template_path = os.getenv("APP_QUOTE_TEMPLATE") if kind == "quote" else None
     output = BytesIO()

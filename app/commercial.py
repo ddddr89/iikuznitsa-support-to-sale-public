@@ -76,6 +76,7 @@ class Commercial:
             db.execute("CREATE INDEX IF NOT EXISTS lead_activity_by_lead ON lead_activity(lead_id, id)")
 
     def create_lead(self, contact, message, sku=None, escalation=False, owner=None):
+        """Сохраняет заявку и копирует историю владельца при создании новой записи."""
         now = datetime.now(timezone.utc)
         lead = dict(id=uuid4().hex, contact=contact, message=message, sku=sku,
                     created_at=now.isoformat(), status="escalated" if escalation else "new")
@@ -150,6 +151,7 @@ class Commercial:
             """, (owner, owner))
 
     def manager_messages(self, owner, after):
+        """Возвращает ответы менеджера по заявкам владельца после указанного ID."""
         with self.connection() as db:
             return [dict(row) for row in db.execute("""
                 SELECT activity.id, activity.content, activity.created_at
@@ -227,6 +229,7 @@ class Commercial:
         return self.lead_queue()["items"]
 
     def create_quote(self, lead_id, items, render):
+        """Сохраняет снимок позиций и оба PDF в одной транзакции."""
         total = sum(item["price_minor"] * item["quantity"] for item in items)
         lines = sorted(items, key=lambda item: item["sku"])
         snapshot = json.dumps(lines, ensure_ascii=False)

@@ -1,4 +1,4 @@
-"""Catalog-grounded model routing for the FastAPI chat route."""
+"""Маршрутизация запросов чата между n8n, прямым вызовом модели и каталогом."""
 
 import base64
 import json
@@ -40,7 +40,7 @@ PROVIDER_ERRORS = (OSError, ValueError, HTTPException)
 
 
 class NoRedirect(HTTPRedirectHandler):
-    """Keep the credentials and payload at the configured endpoint."""
+    """Запрещает перенаправлять учётные данные и тело запроса на другой адрес."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -91,6 +91,7 @@ def _answer(text):
 
 def _send_model(url, model, headers, message, products, actions,
                 search=None, required_tool=False, *, knowledge=(), history=()):
+    """Принимает текст и контекст, выполняет не более одного поиска и возвращает ответ."""
     payload = {
         "model": model,
         "store": False,
@@ -187,6 +188,7 @@ def webhook_headers(secret):
 
 def reply(message: str, products: list[dict], *, search: Search | None = None,
           knowledge=(), history=()) -> dict:
+    """Возвращает текст, источник, трассу маршрута и карточки при наличии."""
     actions = []
     url = os.getenv("N8N_WEBHOOK_URL")
     secret = os.getenv("N8N_WEBHOOK_SECRET")
