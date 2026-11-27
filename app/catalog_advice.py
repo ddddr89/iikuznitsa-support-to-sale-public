@@ -2,6 +2,7 @@
 
 import re
 
+from app.automatic_documents import quantity_in
 from app.catalog_matching import OFFICE_ANNUAL, normalize, normalize_codes, verified_models
 from app.knowledge import official_url
 
@@ -185,7 +186,13 @@ def scoped_answer(scope, products, message, context):
                     "Уточните, какие параметры можно снизить, или обратитесь к менеджеру."), [], []
         return "В каталоге не нашлось товаров с указанными характеристиками. Менеджер может помочь с подбором.", [], []
     if scope.model:
-        return (f"В каталоге есть {item_text(products[0])}. Наличие нужного количества и срок поставки подтвердит менеджер."), products, []
+        selected = products[0]
+        answer = f"В каталоге есть {item_text(selected)}."
+        _, quantity = quantity_in(normalize_codes(message))
+        if quantity and selected["price_minor"] is not None:
+            total = price_text(selected["price_minor"] * quantity)
+            answer += f" По снимку каталога за {quantity} шт. — {total}."
+        return answer + " Наличие нужного количества и срок поставки подтвердит менеджер.", products, []
     selected = products[0]
     evidence = verified_models(selected)
     if evidence and evidence[0] in VERIFIED_DETAILS:

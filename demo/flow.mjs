@@ -55,7 +55,7 @@ try {
   await page.locator("#query").fill(sku);
   await page.locator("#search-form button").click();
   const card = page.locator("#search-products article").filter({ hasText: sku }).first();
-  await card.getByRole("button", { name: "В заявку" }).click();
+  await card.getByRole("button", { name: "Получить КП и счёт" }).waitFor();
   if (recording) await page.locator("#chat-form").scrollIntoViewIfNeeded();
   await pause(page, 2600);
   await page.locator("#question").fill(question);
@@ -73,6 +73,7 @@ try {
   await page.screenshot({ path: resolve(output, "client.png"), fullPage: true });
   await pause(page, 8500);
   await page.locator("#escalate").click();
+  await page.locator("#sku").fill(sku);
   await page.locator("#contact").fill(contact);
   await page.locator("#lead-form button").click();
   const receipt = page.getByText(/ожидает ответа менеджера/);

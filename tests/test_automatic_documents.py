@@ -42,6 +42,12 @@ class AutomaticDocumentsTests(unittest.TestCase):
         clarified = document_request("3", [turn(initial, plan.missing)], self.catalog)
         self.assertEqual((clarified.sku, clarified.quantity, clarified.missing), ("465223", 3, None))
 
+    def test_quantity_from_the_named_product_question_is_reused_for_invoice(self):
+        prior = turn("Нужны три монитора Dell U2424H. Есть они в каталоге? Сколько будет стоить весь заказ?",
+                     "В каталоге есть Dell U2424H, артикул 465223 — 26 173 ₽.")
+        plan = document_request("Подготовьте счёт", [prior], self.catalog)
+        self.assertEqual((plan.sku, plan.quantity, plan.missing), ("465223", 3, None))
+
     def test_quantity_first_is_carried_while_waiting_for_sku(self):
         initial = "Подготовьте счёт на две штуки"
         plan = document_request(initial, [], self.catalog)

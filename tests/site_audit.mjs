@@ -88,8 +88,9 @@ try {
 
     await page.locator("#query").fill("DEMO-MON-01");
     await page.locator("#search-form button").click();
-    await page.locator("#search-products article").filter({ hasText: "DEMO-MON-01" })
-      .getByRole("button", { name: "В заявку" }).click();
+    const card = page.locator("#search-products article").filter({ hasText: "DEMO-MON-01" });
+    await card.getByRole("button", { name: "Получить КП и счёт" }).waitFor();
+    assert.equal(await card.getByRole("button").count(), 1);
     await page.getByRole("button", { name: "Позвать менеджера" }).click();
     assert.ok(await page.locator(".chat-panel #handoff").isVisible());
     assert.equal(await page.locator("#lead-message").inputValue(), question);

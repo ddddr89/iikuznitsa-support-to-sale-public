@@ -143,6 +143,23 @@ class CatalogMatchingTests(TestCase):
         self.assertEqual(second["products"][0]["sku"], "dell")
         self.assertIn("Наличие нужного количества", second["answer"])
 
+    def test_named_model_and_order_total_ignore_previous_monitor_requirements(self):
+        from app.catalog_advice import price_text
+
+        question = "Нужны три монитора Dell U2424H. Есть они в каталоге? Сколько будет стоить весь заказ?"
+        request = SimpleNamespace(cookies={})
+        history = [Turn(question="Подберите монитор Philips 27 дюймов 4K IPS.",
+                        answer="В каталоге проверены ограничения Philips.")]
+        with patch("app.main.reply") as model:
+            result = self.chat(Chat(message=question, history=history), request)
+            model.assert_not_called()
+        self.assertEqual([p["sku"] for p in result["products"]], ["dell"])
+        unit = self.catalog.get("dell")["price_minor"]
+        self.assertIn(f"за 3 шт. — {price_text(unit * 3)}", result["answer"])
+        self.assertNotIn("escalation", result)
+        conflicting = self.chat(Chat(message="Есть монитор Dell U2424H с 4K?"), request)
+        self.assertEqual(conflicting["products"], [])
+
     def test_office_desktop_and_per_user_term_select_standard(self):
         query = "Microsoft 365 для 15 сотрудников на год. Нужны настольные Outlook и Word"
         result = self.chat(Chat(message=query), SimpleNamespace(cookies={}))

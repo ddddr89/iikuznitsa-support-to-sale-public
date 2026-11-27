@@ -63,7 +63,7 @@ function renderAnswer(result, intent) {
     }
   }
   const products = element("div", undefined, "cards");
-  showProducts(products, result.products, true);
+  showProducts(products, result.products);
   if (products.children.length) answer.append(products);
   if (result.escalation?.id) byId("open-my-leads").hidden = false;
   if (intent === catalogIntent) {
@@ -79,7 +79,7 @@ function renderAnswer(result, intent) {
   conversation.scrollTop = answer.offsetTop - conversation.offsetTop;
 }
 
-function showProducts(container, products, offerDocuments = false) {
+function showProducts(container, products) {
   const cards = products.map((product) => {
     const card = element("article", undefined, "card");
     card.append(element("h3", product.name));
@@ -101,28 +101,15 @@ function showProducts(container, products, offerDocuments = false) {
         // Товар можно выбрать даже без корректной ссылки на его страницу.
       }
     }
-    const documents = offerDocuments && product.price_minor !== null;
-    const select = element("button", "В заявку", "secondary");
-    select.type = "button";
-    select.addEventListener("click", () => {
-      escalation = false;
-      byId("sku").value = product.sku;
-      byId("request").textContent = "Оставить заявку";
-      openHandoff();
-      byId("contact").focus();
+    const prepare = element("button", "Получить КП и счёт", "secondary");
+    prepare.type = "button";
+    prepare.addEventListener("click", () => {
+      const form = byId("chat-form");
+      if (form.querySelector("button").disabled) return;
+      question.value = "Подготовьте счёт на товар " + product.sku + ".";
+      form.requestSubmit();
     });
-    row.append(select);
-    if (documents) {
-      const prepare = element("button", "Запросить документы", "secondary");
-      prepare.type = "button";
-      prepare.addEventListener("click", () => {
-        const form = byId("chat-form");
-        if (form.querySelector("button").disabled) return;
-        question.value = "Подготовьте счёт на товар " + product.sku + ".";
-        form.requestSubmit();
-      });
-      row.append(prepare);
-    }
+    row.append(prepare);
     card.append(row);
     return card;
   });

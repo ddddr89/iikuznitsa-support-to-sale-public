@@ -198,7 +198,12 @@ def product_scope(query, previous=""):
         category = "external" if EXTERNAL.search(current or prior) or (not mentions and EXTERNAL.search(prior)) else "ssd"
         if category == "ssd" and not (DRIVE_TYPE.search(current + " " + prior) or re.search(r"\bnvme\b", current)):
             return None
-    text = current + " " + prior if not mentions or (prior_mentions and min(prior_mentions)[1] == min(mentions)[1]) else current
+    # Явно указанная модель — новый точный поиск. Ограничения предыдущего
+    # подбора монитора не относятся к ней, даже если категория та же.
+    exact_monitor = category == "monitor" and MODEL.search(current)
+    text = current + " " + prior if not exact_monitor and (
+        not mentions or (prior_mentions and min(prior_mentions)[1] == min(mentions)[1])
+    ) else current
     max_price = budget_limit(text)
     requirements = [evidence for request, evidence in REQUIREMENTS.get(category, ()) if re.search(request, text)]
     if category in {"monitor", "external"} and re.search(USB_C, text):
