@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from app.ai import MAX_CONTEXT_BYTES, MAX_OUTPUT_TOKENS, _json_size, bounded_context, reply
 from app.catalog import Catalog
-from app.catalog_advice import safe_commercial_answer
+from app.catalog_advice import checked_model_answer, safe_commercial_answer
 from app.commercial import Commercial
 from app.knowledge import Knowledge
 from app.main import Chat, create_app
@@ -41,6 +41,38 @@ class CommercialGuardTests(TestCase):
         self.assertIn("Не удалось подтвердить", result)
         self.assertIn("менеджеру", result)
         self.assertIsNone(safe_commercial_answer("Как открыть чат?", "Нажмите на вкладку «Чат».", []))
+
+    def test_free_form_hardware_recommendation_requires_catalog_evidence(self):
+        product = {"sku": "42", "name": "Тестовый монитор", "price_minor": 1599000,
+                   "url": "https://store.softline.ru/demo/42/"}
+        answer, sources = checked_model_answer(
+            "Какой монитор взять?", "Берите этот. У него IPS, USB-C и 165 Гц.", [product], [],
+        )
+        self.assertIn("15 990 ₽", answer)
+        for claim in ("IPS", "USB-C", "165 Гц", "Берите этот"):
+            self.assertNotIn(claim, answer)
+        self.assertEqual(sources, [{"title": product["name"], "url": product["url"]}])
+        answer, sources = checked_model_answer("Что выбрать?", "Модель Ultra X — лучший вариант.", [], [])
+        self.assertNotIn("Ultra X", answer)
+        self.assertEqual(sources, [])
+
+    def test_only_relevant_verbatim_official_excerpt_can_pass(self):
+        source = {"title": "Где проверить статус заказа",
+                  "excerpt": "Статус заказа можно посмотреть в личном кабинете.",
+                  "url": "https://store.softline.ru/delivery_info/"}
+        question = "Как проверить статус заказа?"
+        answer = source["excerpt"]
+        self.assertEqual(checked_model_answer(question, answer, [], [source]),
+                         (answer, [{"title": source["title"], "url": source["url"]}]))
+        for message, generated, resource in (
+            (question, answer + " Обновление происходит через пять минут.", source),
+            (question, answer, {**source, "url": "https://invalid.example/delivery"}),
+            ("Могу поменять номер телефона?", answer, source),
+        ):
+            with self.subTest(message=message, resource=resource):
+                checked, links = checked_model_answer(message, generated, [], [resource])
+                self.assertNotIn(generated, checked)
+                self.assertEqual(links, [])
 
     def test_context_budget_and_n8n_usage_log_exclude_personal_content(self):
         messages = [{"question": "а" * 1800, "answer": "б" * 3500}] * 4

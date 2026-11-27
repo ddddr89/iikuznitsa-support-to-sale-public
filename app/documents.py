@@ -120,6 +120,8 @@ def render_pdf(quote, kind):
         if seller:
             story.append(Paragraph(escape(seller).replace("\n", "<br/>"), text))
         story.append(Paragraph("Проект для проверки менеджером. Оплата по этому документу не предусмотрена.", text))
+    if quote.get("catalog_pricing"):
+        story.append(Paragraph("Цены из снимка каталога. Наличие и условия поставки подлежат подтверждению.", text))
     story.append(Spacer(1, 12))
 
     def row(values):

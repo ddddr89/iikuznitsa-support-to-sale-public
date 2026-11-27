@@ -141,5 +141,39 @@ class ContestTests(unittest.TestCase):
                         self.assertIn("Оплата по этому документу не предусмотрена", text)
 
 
+    def test_17_chat_generates_both_documents_with_owner_scope_and_retry(self):
+        def session_cookie():
+            with urlopen(BASE + self.api + "/client/leads", timeout=20) as response:
+                return response.headers["Set-Cookie"].split(";", 1)[0]
+
+        owner = session_cookie()
+
+        def chat(message):
+            request = Request(BASE + self.api + "/chat", json.dumps({"message": message}).encode(),
+                              {"Content-Type": "application/json", "Cookie": owner})
+            with urlopen(request, timeout=20) as response:
+                return json.load(response)
+
+        question = "Подготовьте счёт, артикул DEMO-MON-01"
+        self.assertNotIn("documents", chat(question))
+        result = chat("Три штуки")
+        docs = result["documents"]
+        self.assertEqual(docs["total_minor"], 7197000)
+        self.assertNotIn("escalation", result)
+        self.assertEqual(chat(question + ", 3 штуки")["documents"]["id"], docs["id"])
+        base = f"{BASE}{self.api}/client/quotes/{docs['id']}"
+        other = session_cookie()
+        for name in ("quote.pdf", "invoice.pdf", "documents.zip"):
+            with urlopen(Request(f"{base}/{name}", headers={"Cookie": owner}), timeout=20) as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(HTTPError) as forbidden:
+                urlopen(Request(f"{base}/{name}", headers={"Cookie": other}), timeout=20)
+            self.assertEqual(forbidden.exception.code, 404)
+            forbidden.exception.close()
+        missing = chat("Подготовьте счёт, артикул DEMO-BACKUP-01, 2 штуки")
+        self.assertIn("escalation", missing)
+        self.assertNotIn("documents", missing)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

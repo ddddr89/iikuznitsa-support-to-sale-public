@@ -31,8 +31,22 @@ function addMessage(text, customer = false, author = "Помощник") {
   return message;
 }
 
+function addDocuments(message, documents) {
+  if (!/^[a-f0-9]{32}$/.test(documents?.id ?? "")) return;
+  const buttons = element("div", undefined, "row");
+  const base = "/api/v1/client/quotes/" + documents.id;
+  for (const [path, title] of [["quote.pdf", "Коммерческое предложение PDF"], ["invoice.pdf", "Проект счёта PDF"]]) {
+    const link = element("a", title, "secondary");
+    link.href = base + "/" + path;
+    buttons.append(link);
+  }
+  message.append(buttons);
+  byId("open-my-leads").hidden = false;
+}
+
 function renderAnswer(result, intent) {
   const answer = addMessage(result.answer);
+  addDocuments(answer, result.documents);
   for (const source of result.sources ?? []) {
     try {
       const url = new URL(source.url);
@@ -88,17 +102,27 @@ function showProducts(container, products, offerDocuments = false) {
       }
     }
     const documents = offerDocuments && product.price_minor !== null;
-    const select = element("button", documents ? "Запросить документы" : "В заявку", "secondary");
+    const select = element("button", "В заявку", "secondary");
     select.type = "button";
     select.addEventListener("click", () => {
       escalation = false;
       byId("sku").value = product.sku;
-      byId("request").textContent = documents ? "Запросить КП и проект счёта" : "Оставить заявку";
-      if (documents) byId("lead-message").value = "Прошу подготовить КП и проект счёта на товар " + product.sku + ".";
+      byId("request").textContent = "Оставить заявку";
       openHandoff();
       byId("contact").focus();
     });
     row.append(select);
+    if (documents) {
+      const prepare = element("button", "Запросить документы", "secondary");
+      prepare.type = "button";
+      prepare.addEventListener("click", () => {
+        const form = byId("chat-form");
+        if (form.querySelector("button").disabled) return;
+        question.value = "Подготовьте счёт на товар " + product.sku + ".";
+        form.requestSubmit();
+      });
+      row.append(prepare);
+    }
     card.append(row);
     return card;
   });
@@ -251,8 +275,8 @@ async function restoreChat() {
     const { items } = await request("/client/chat-history?include_times=true");
     history.push(...items.slice(-4).map(({ question, answer }) => ({ question, answer })));
     if (items.length) lastQuestion = items.at(-1).question;
-    const timeline = items.flatMap(({ question, answer, created_at }) => [
-      { text: question, customer: true, created_at }, { text: answer, created_at },
+    const timeline = items.flatMap(({ question, answer, created_at, documents }) => [
+      { text: question, customer: true, created_at }, { text: answer, created_at, documents },
     ]);
     try {
       const replies = await readManagerMessages();
@@ -263,7 +287,10 @@ async function restoreChat() {
       // Следующий опрос повторит загрузку ответов менеджера.
     }
     timeline.sort((first, second) => first.created_at.localeCompare(second.created_at));
-    for (const entry of timeline) addMessage(entry.text, entry.customer, entry.author);
+    for (const entry of timeline) {
+      const message = addMessage(entry.text, entry.customer, entry.author);
+      addDocuments(message, entry.documents);
+    }
   } catch {
     // При сбое загрузки истории новый диалог остаётся доступен.
   }

@@ -1,5 +1,6 @@
 """HTTP API чата, каталога, контакта с менеджером и защищённых документов."""
 
+import logging
 import os
 import re
 from collections import deque
@@ -19,11 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.ai import reply
+from app.automatic_documents import document_quantity_followup, document_request
 from app.catalog import Catalog
-from app.catalog_advice import advisory, safe_commercial_answer, scoped_answer
+from app.catalog_advice import advisory, checked_model_answer, scoped_answer
 from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
-from app.documents import package_documents, render_pdf
+from app.documents import package_documents, render_pdf, rubles
 from app.knowledge import Knowledge
 from app.license_advice import NO_MATCH, license_answer
 
@@ -31,6 +33,8 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Contact = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)]
 Sku = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 STATIC = Path(__file__).with_name("static")
+CHAT_LOG = logging.getLogger("uvicorn.error")
+ACTION_NAME = re.compile(r"[a-z_]{1,40}")
 SESSION_COOKIE = "__Host-support_session"
 SESSION_LIFETIME = 7 * 86400
 LeadStatus = Literal["new", "escalated", "in_progress", "answered", "closed"]
@@ -266,15 +270,51 @@ def create_app(db_path=None):
         guidance = advisory(body.message, context)
         resources = knowledge.search(body.message)
         confirmed = resources[0] if resources and resources[0].get("kind") == "manager_confirmed" else None
+        trusted_history = commercial.chat_history(owner) if owner else []
         sources = []
         products = []
         searched = False
+        documents = None
+        document_handoff = False
         if operator_requested:
             result = {"answer": "Ответ менеджера появится в этом чате.", "provider": "catalog", "actions": []}
+        elif (document := document_request(body.message, trusted_history, catalog)) is not None:
+            if not owner:
+                answer = "Откройте клиентский чат, чтобы подготовить документы в своей сессии."
+            elif document.missing:
+                answer = document.missing
+                document_handoff = document.handoff
+            elif not reserve_lead_slot(owner):
+                answer = "Достигнут лимит подготовки документов. Повторите попытку через минуту."
+            else:
+                product = document.product
+                item = {key: product[key] for key in ("sku", "name", "price_minor")}
+                item["quantity"] = document.quantity
+                lead = commercial.create_lead(
+                    SYSTEM_CONTACT, f"Документы по каталогу: {item['sku']}, {item['quantity']} шт.",
+                    sku=item["sku"], owner=owner,
+                )
+                quote = commercial.create_quote(lead["id"], [item], render_documents, catalog_pricing=True)
+                documents = {**quote, "lead_id": lead["id"]}
+                answer = (f"Готовы коммерческое предложение и проект счёта на {item['quantity']} шт. "
+                          f"артикула {item['sku']}. Итого по снимку каталога: {rubles(quote['total_minor'])}. "
+                          "Наличие и условия поставки требуют подтверждения. Проект счёта не предназначен для оплаты.")
+            result = {"answer": answer, "provider": "catalog",
+                      "actions": [{"type": "documents_prepared", "status": "done"}] if documents else []}
         elif confirmed and confirmed["title"].casefold() == body.message.casefold():
             result = {"answer": confirmed["excerpt"], "provider": "knowledge", "actions": []}
             if confirmed.get("url"):
                 sources = [{"title": confirmed["title"], "url": confirmed["url"]}]
+        elif owner and (learned := knowledge.learn_from_completion(body.message, trusted_history)):
+            result = {"answer": "Хорошо, обращайтесь, если возникнут другие вопросы.", "provider": "catalog",
+                      "actions": [{"type": "knowledge_learned", "status": "done"}]}
+        elif (reference := knowledge.automatic_answer(body.message) or knowledge.official_candidate(body.message)):
+            result = {"answer": reference["excerpt"], "provider": "knowledge",
+                      "actions": [{"type": reference["kind"], "status": "done"}]}
+            if reference.get("url"):
+                sources = [{"title": reference["title"], "url": reference["url"]}]
+        elif (quantity_answer := document_quantity_followup(body.message, trusted_history, catalog)):
+            result = {"answer": quantity_answer, "provider": "catalog", "actions": []}
         elif guidance:
             answer, sources = guidance
             result = {"answer": answer, "provider": "catalog", "actions": []}
@@ -306,11 +346,8 @@ def create_app(db_path=None):
         tool_products = result.pop("products", [])
         if result["provider"] in {"yandex", "openai"}:
             products = recommended_products(catalog, [*tool_products, *products], result["answer"])
-            safe_answer = safe_commercial_answer(body.message, result["answer"], products)
-            if safe_answer is not None:
-                result["answer"] = safe_answer
-                result["actions"].append({"type": "commercial_claims_check", "status": "done"})
-                sources = []
+            result["answer"], sources = checked_model_answer(body.message, result["answer"], products, resources)
+            result["actions"].append({"type": "commercial_claims_check", "status": "done"})
         elif result["provider"] == "knowledge":
             products = []
         actions = [{"type": "knowledge_search", "status": "done"}]
@@ -325,7 +362,7 @@ def create_app(db_path=None):
             r"(?:не удалось (?:подтвердить|найти)|недостаточно (?:данных|информации)|"
             r"нет (?:информации|подходящ\w* (?:позици|решени|товар)\w*))", answer, re.IGNORECASE,
         )) and bool(re.search(r"менеджер\w*", answer, re.IGNORECASE))
-        needs_manager = operator_requested or model_handoff or (
+        needs_manager = operator_requested or document_handoff or model_handoff or (
             result["provider"] == "catalog" and any(text in answer for text in UNRESOLVED_CATALOG)
         )
         wants_escalation = model_unavailable or needs_manager
@@ -340,7 +377,9 @@ def create_app(db_path=None):
         elif model_unavailable:
             result["answer"] += "\n\nОткройте клиентский чат, чтобы передать вопрос менеджеру."
         if owner:
-            commercial.record_turn(owner, body.message, result["answer"])
+            commercial.record_turn(owner, body.message, result["answer"], quote_id=documents["id"] if documents else None)
+        if documents:
+            result["documents"] = documents
         if confirmed:
             actions.append({"type": "knowledge_confirmed", "status": "done"})
         if should_escalate:
@@ -348,15 +387,21 @@ def create_app(db_path=None):
             if operator_requested:
                 subject = next((turn.question for turn in reversed(body.history)
                                 if not OPERATOR_REQUEST.search(turn.question)), subject)
-            lead = commercial.create_lead(SYSTEM_CONTACT, subject, escalation=True, owner=owner)
+            lead = commercial.create_lead(SYSTEM_CONTACT, subject, sku=document.sku if document_handoff else None,
+                                          escalation=True, owner=owner)
             result["escalation"] = {"status": lead["status"]}
             if owner:
                 result["escalation"]["id"] = lead["id"]
             actions.append({"type": "lead_escalation", "status": "done"})
+        trace = [*actions, *result["actions"]]
+        CHAT_LOG.info("chat_route provider=%s actions=%s source_count=%d", result["provider"],
+                      ",".join(f"{item['type']}:{item['status']}" for item in trace
+                               if ACTION_NAME.fullmatch(item["type"])
+                               and item["status"] in {"done", "error", "skipped"}), len(sources))
         return {
             "products": products,
             **result,
-            "actions": [*actions, *result["actions"]],
+            "actions": trace,
             "sources": sources,
         }
 

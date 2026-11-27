@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 import re
@@ -26,6 +27,52 @@ TOPICS = (
 STOPWORDS = {"как", "для", "мне", "можно", "будет", "какие", "какой", "когда",
              "это", "если", "где", "найти", "подскажите", "про", "пожалуйста"}
 LIMIT_BYTES = 3 * 1024 * 1024
+AUTO_METHOD = "official_excerpt_after_completion"
+# Для автоматической записи подходят только конкретные стабильные справочные
+# факты. Канонические тексты проверяются по уже загруженному первичному источнику.
+ORDER_STATUS = "order_status"
+ORDER_STATUS_TITLE = "Как узнать о состоянии исполнения заказа?"
+ORDER_STATUS_FACT = (
+    "Вы сможете перейти по ссылке из письма в Личный кабинет Softline "
+    "и узнать, на какой стадии находится ваш заказ."
+)
+ORDER_START = "order_start"
+AUTO_TOPICS = {
+    ORDER_STATUS: (ORDER_STATUS_TITLE, ORDER_STATUS_FACT, DELIVERY),
+    ORDER_START: (
+        "Как оформить заказ на сайте?",
+        "Для оформления заказа нужно нажать на кнопку «В корзину» на сайте рядом с выбранным продуктом. "
+        "Далее на странице «Корзина» перейти к оформлению заказа через кнопку «Оформить заказ».",
+        DELIVERY,
+    ),
+}
+ORDER_STATUS_QUERY = re.compile(
+    r"(?:(?:где|как) (?:посмотреть|проверить|узнать|отследить) "
+    r"(?:статус|состояние(?: исполнения)?|стадию исполнения) "
+    r"(?:(?:моего|своего) )?заказа|"
+    r"где (?:виден|отображается) статус заказа|"
+    r"покажите где посмотреть статус заказа|как узнать о состоянии исполнения заказа)"
+)
+ORDER_START_QUERY = re.compile(
+    r"(?:как (?:начать оформление|оформить|начать оформлять) заказ на сайте(?: softline)?|"
+    r"как перейти к оформлению заказа из корзины)"
+)
+COMPLETION = re.compile(
+    r"(?:спасибо )?(?:вопрос решен|проблема решена|это помогло|это решило мой вопрос)"
+)
+
+
+def normalize_automatic_request(text):
+    return " ".join(re.sub(r"[?!.;,]+", " ", text.casefold().replace("ё", "е")).split())
+
+
+def automatic_topic(text):
+    normalized = normalize_automatic_request(text)
+    if ORDER_STATUS_QUERY.fullmatch(normalized):
+        return ORDER_STATUS
+    if ORDER_START_QUERY.fullmatch(normalized):
+        return ORDER_START
+    return None
 
 
 def official_url(url):
@@ -172,6 +219,11 @@ class Knowledge:
                     pages INTEGER NOT NULL, excerpts INTEGER NOT NULL,
                     chat_lines INTEGER NOT NULL, chat_files INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS support_automatic (
+                    topic TEXT PRIMARY KEY,
+                    title TEXT NOT NULL, excerpt TEXT NOT NULL, url TEXT NOT NULL,
+                    created_at TEXT NOT NULL, method TEXT NOT NULL
+                );
             """)
 
     def ingest(self, directory):
@@ -222,6 +274,68 @@ class Knowledge:
             db.execute("INSERT INTO support_confirmed_search (rowid, title, excerpt) VALUES (?, ?, ?)",
                        (entry_id, question, answer))
             return entry_id
+
+    def _official_fact(self, db, topic):
+        title, excerpt, url = AUTO_TOPICS[topic]
+        if not official_url(url):
+            return None
+        excerpts = db.execute("""
+            SELECT excerpt FROM support_knowledge WHERE title = ? AND url = ?
+        """, (title, url))
+        if not any(row["excerpt"] == excerpt or row["excerpt"].startswith(excerpt + " ") for row in excerpts):
+            return None
+        # Модераторская запись для той же темы имеет приоритет. Расхождение
+        # блокирует автоответ до ручной сверки, даже если он уже был сохранён.
+        for row in db.execute("SELECT question, answer FROM support_confirmed"):
+            if automatic_topic(row["question"]) == topic and row["answer"].strip() != excerpt:
+                return None
+        return {"title": title, "excerpt": excerpt, "url": url, "kind": "knowledge_automatic"}
+
+    def official_candidate(self, message):
+        """Отдаёт сверенный официальный фрагмент для первого обращения."""
+        if (topic := automatic_topic(message)) is not None:
+            with self.connection() as db:
+                if fact := self._official_fact(db, topic):
+                    return {**fact, "kind": "knowledge_source"}
+        return None
+
+    def learn_from_completion(self, message, trusted_history):
+        """Сохраняет канонический факт после явного подтверждения решения.
+
+        История должна читаться сервером для текущей сессии. Последнее
+        сообщение клиента, текст диалога и идентификаторы в запись не входят.
+        """
+        if "?" in message or not COMPLETION.fullmatch(normalize_automatic_request(message)) or not trusted_history:
+            return None
+        previous = trusted_history[-1]
+        question, answer = previous["question"], previous["answer"]
+        if (topic := automatic_topic(question)) is None:
+            return None
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            fact = self._official_fact(db, topic)
+            if fact is None or answer.strip() != fact["excerpt"]:
+                return None
+            inserted = db.execute("""
+                INSERT INTO support_automatic (topic, title, excerpt, url, created_at, method)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(topic) DO NOTHING
+            """, (topic, fact["title"], fact["excerpt"], fact["url"],
+                  datetime.now(timezone.utc).isoformat(), AUTO_METHOD))
+            return fact if inserted.rowcount else None
+
+    def automatic_answer(self, message):
+        """Возвращает выученный ответ при повторной проверке факта и источника."""
+        if (topic := automatic_topic(message)) is None:
+            return None
+        with self.connection() as db:
+            db.execute("BEGIN")
+            fact = self._official_fact(db, topic)
+            stored = db.execute("""
+                SELECT title, excerpt, url FROM support_automatic WHERE topic = ? AND method = ?
+            """, (topic, AUTO_METHOD)).fetchone()
+            if fact and stored and all(fact[key] == stored[key] for key in stored.keys()):
+                return fact
+        return None
 
     def search(self, message):
         """Подбирает подтверждённый ответ и до трёх справочных выдержек суммарно."""

@@ -81,6 +81,12 @@ class Commercial:
             """)
             db.execute("CREATE INDEX IF NOT EXISTS session_turns_owner ON session_turns(owner, id)")
             db.execute("""
+                CREATE TABLE IF NOT EXISTS session_turn_documents (
+                    turn_id INTEGER PRIMARY KEY REFERENCES session_turns(id) ON DELETE CASCADE,
+                    quote_id TEXT NOT NULL REFERENCES quotes(id)
+                )
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS lead_activity (
                     id INTEGER PRIMARY KEY, lead_id TEXT NOT NULL REFERENCES leads(id),
                     role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
@@ -154,18 +160,24 @@ class Commercial:
     def chat_history(self, owner, include_times=False):
         with self.connection() as db:
             turns = [dict(row) for row in db.execute("""
-                SELECT question, answer, created_at FROM session_turns WHERE owner = ? ORDER BY id
+                SELECT question, answer, created_at, quote_id
+                FROM session_turns LEFT JOIN session_turn_documents ON turn_id = id
+                WHERE owner = ? ORDER BY id
             """, (owner,))]
-        if not include_times:
-            for turn in turns:
+        for turn in turns:
+            if (quote_id := turn.pop("quote_id")) is not None:
+                turn["documents"] = {"id": quote_id}
+            if not include_times:
                 turn.pop("created_at")
         return turns
 
-    def record_turn(self, owner, question, answer):
+    def record_turn(self, owner, question, answer, *, quote_id=None):
         with self.connection() as db:
-            db.execute("""
+            turn = db.execute("""
                 INSERT INTO session_turns (owner, question, answer, created_at) VALUES (?, ?, ?, ?)
-            """, (owner, question, answer, datetime.now(timezone.utc).isoformat()))
+            """, (owner, question, answer, datetime.now(timezone.utc).isoformat())).lastrowid
+            if quote_id is not None:
+                db.execute("INSERT INTO session_turn_documents VALUES (?, ?)", (turn, quote_id))
             db.execute("""
                 DELETE FROM session_turns WHERE owner = ? AND id NOT IN (
                     SELECT id FROM session_turns WHERE owner = ? ORDER BY id DESC LIMIT 12
@@ -293,7 +305,7 @@ class Commercial:
     def list_leads(self):
         return self.lead_queue()["items"]
 
-    def create_quote(self, lead_id, items, render):
+    def create_quote(self, lead_id, items, render, *, catalog_pricing=False):
         """Сохраняет снимок позиций и оба PDF в одной транзакции."""
         total = sum(item["price_minor"] * item["quantity"] for item in items)
         lines = sorted(items, key=lambda item: item["sku"])
@@ -310,7 +322,8 @@ class Commercial:
             if not previous:
                 db.execute("INSERT INTO quotes VALUES (?, ?, ?, ?)", (quote_id, lead_id, snapshot, total))
             if not db.execute("SELECT 1 FROM quote_pdfs WHERE quote_id = ?", (quote_id,)).fetchone():
-                payload = dict(id=quote_id, contact=lead["contact"], items=lines, total_minor=total)
+                payload = dict(id=quote_id, contact=lead["contact"], items=lines, total_minor=total,
+                               catalog_pricing=catalog_pricing)
                 documents = [render(payload, kind) for kind in ("quote", "invoice")]
                 db.execute("INSERT INTO quote_pdfs VALUES (?, ?, ?)", (quote_id, *documents))
         return dict(id=quote_id, total_minor=total, currency="RUB")

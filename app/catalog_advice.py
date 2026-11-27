@@ -3,6 +3,7 @@
 import re
 
 from app.catalog_matching import OFFICE_ANNUAL, normalize, normalize_codes, verified_models
+from app.knowledge import official_url
 
 MICROSOFT_365 = "https://www.microsoft.com/en-us/microsoft-365/business/no-teams-plans-and-pricing"
 WINDOWS_SERVER = "https://www.microsoft.com/licensing/guidance/Windows-Server-2025"
@@ -193,19 +194,14 @@ def scoped_answer(scope, products, message, context):
     return f"Подходит {item_text(selected)}.", products, []
 
 
-# Для этих тем модель выбирает кандидатов, а итоговые факты формирует приложение.
-COMMERCIAL_TOPIC = re.compile(
-    r"₽|\b(?:цен[а-я]*|стоимост|стоит|рубл|налич|склад|остат|достав|постав|срок|"
-    r"совмест|поддержива|подойд|лицензи|подписк|скидк|гаранти|запуст|установк|отправ|работает на)|"
-    r"\b(?:price|cost|stock|shipping|delivery|compatible|license|licence|subscription)\b|"
-    r"\b\d+\s*(?:штук|шт\.|дней|часов|мест)\b",
-    re.IGNORECASE,
-)
+CHAT_NAVIGATION = "Нажмите на вкладку «Чат»."
+REFERENCE_PLACEHOLDER = "Официальный справочный раздел по теме обращения."
+REFERENCE_STOP_WORDS = {"где", "как", "можно", "подскажите", "пожалуйста", "нужно", "свой", "своего"}
 
 
 def safe_commercial_answer(message, answer, products):
-    """Подменяет коммерческую прозу модели проверенной карточкой или уточнением."""
-    if not (COMMERCIAL_TOPIC.search(message) or COMMERCIAL_TOPIC.search(answer)):
+    """Формирует итог из данных каталога даже без коммерческих ключевых слов."""
+    if normalize(message.strip()).rstrip("?") == "как открыть чат" and answer == CHAT_NAVIGATION:
         return None
     if not products:
         return ("Не удалось подтвердить коммерческие условия по каталогу. "
@@ -213,3 +209,30 @@ def safe_commercial_answer(message, answer, products):
     facts = "\n".join(f"• {item_text(product)}" for product in products)
     return ("Данные товарного каталога:\n" + facts +
             "\n\nНаличие, сроки поставки, совместимость и условия лицензирования подтвердит менеджер.")
+
+
+def reference_terms(text):
+    return {word[:5] for word in re.findall(r"[^\W\d_]+", normalize(text))
+            if len(word) >= 4 and word not in REFERENCE_STOP_WORDS}
+
+
+def checked_model_answer(message, answer, products, resources):
+    """Принимает проверенную выдержку дословно или строит ответ заново."""
+    terms = reference_terms(message)
+    for item in resources:
+        url = item.get("url")
+        excerpt = item.get("excerpt", "").strip()
+        title = item.get("title", "").strip()
+        if (url and official_url(url) and title and excerpt and excerpt != REFERENCE_PLACEHOLDER
+                and " ".join(answer.split()) == " ".join(excerpt.split())
+                and len(terms & reference_terms(title)) >= 2):
+            return excerpt, [{"title": title, "url": url}]
+
+    replacement = safe_commercial_answer(message, answer, products)
+    if replacement is None:
+        return CHAT_NAVIGATION, []
+    links = {}
+    for product in products:
+        if (url := product.get("url")) and official_url(url):
+            links[url] = product["name"]
+    return replacement, [{"title": title, "url": url} for url, title in links.items()]
