@@ -21,7 +21,7 @@ EXPLICIT = re.compile(
 )
 SEATS = re.compile(r"\b([1-9]\d{0,6})\s*(?:именных\s+)?(?:пользовател\w*|сотрудник\w*|устройств\w*|рабоч\w* мест\w*|пк)\b")
 TERM = re.compile(r"\b(?:(\d+)\s*)?(год(?:а|ов)?|лет|месяц\w*|мес\.?)(?!\w)|\b(бессроч\w*)\b")
-NEW = re.compile(r"\b(?:нов(?:ая|ую|ой)\s+лицензи\w*|первичн\w*|(?:тип лицензии:\s*)(?:базовая|полная версия))\b")
+NEW = re.compile(r"\b(?:нов(?:ая|ую|ой)\s+лицензи\w*|первичн\w*|(?:покупаем|берем|приобретаем)\s+впервые|первая\s+покупка|(?:тип лицензии:\s*)(?:базовая|полная версия))\b")
 RENEWAL = re.compile(r"\b(?:продлен\w*|продлить|renewal)\b")
 UNKNOWN = re.compile(r"\b(?:не знаю|не определил\w*|не могу уточнить)\b")
 NO_MATCH = "Не удалось подтвердить лицензию по указанным параметрам в каталоге."
@@ -71,7 +71,8 @@ def terms(text):
 
 def purchase(text):
     # «Новая лицензия или продление» не является выбором типа закупки.
-    result = {kind for kind, pattern in (("new", NEW), ("renew", RENEWAL)) if pattern.search(text)}
+    result = {kind for kind, pattern in (("new", NEW), ("renew", RENEWAL)) if any(not re.match(r"\s+не\s+подходит", text[match.end():])
+                     and not re.search(r"\bне\s+$", text[:match.start()]) for match in pattern.finditer(text))}
     return next(iter(result)) if len(result) == 1 else None
 
 

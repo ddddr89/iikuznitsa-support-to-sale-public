@@ -20,7 +20,7 @@ PLATFORMS = {
     "Google Workspace": r"google workspace",
 }
 THREATS = {"спам": r"\b(?:анти)?спам\w*", "фишинг": r"\bфишинг\w*",
-           "вредоносные вложения": r"вредоносн\w*\s+вложен\w*"}
+           "вредоносные вложения": r"(?:вредоносн\w*|зараженн\w*)\s+(?:вложен\w*|файл\w*)"}
 SERVICE_TOPIC = re.compile(r"\b(?:достав\w*|самовывоз\w*|возврат\w*|обмен\w*|эдо|"
                            r"оплат\w*|статус\w*\s+(?:моего\s+)?заказ\w*)\b")
 FOLLOW_PRODUCT = re.compile(r"\b(?:этот|эту|эти|такой|у него|их|сколько стоит|а цена|"
@@ -123,7 +123,7 @@ def verified_options(catalog, values):
     return confirmed[:3]
 
 
-def mail_consultation(message, history, catalog, *, new_product=False):
+def mail_consultation(message, history, catalog, *, new_product=False, state=None):
     current = normalize(message).strip()
     active = []
     for turn in reversed(history):
@@ -131,7 +131,8 @@ def mail_consultation(message, history, catalog, *, new_product=False):
             break
         active.append(turn)
     is_start = starts_mail(current)
-    if not is_start and (not active or new_product or len(current.split()) > 10 or
+    has_state = state is not None and state.route == "mail" and bool(state.facts)
+    if not is_start and (not (active or has_state) or new_product or len(current.split()) > 10 or
                          re.match(r"^(?:нужен|нужна|хочу купить|подберите|найдите)\s", current)):
         return None
     if is_start and (not active or active[0]["answer"].startswith(CONCLUSION)):
@@ -141,11 +142,12 @@ def mail_consultation(message, history, catalog, *, new_product=False):
             return CONCLUSION + " вопрос уже передан менеджеру с уточнениями.", [], None, False
         if "каталог подтверждает" not in active[0]["answer"]:
             return CONCLUSION + " менеджер может проверить варианты по указанным данным.", [], None, False
-    slots = Slots()
-    asked = None
-    for turn in reversed(active):
-        collect(slots, normalize(turn["question"]).strip(), asked)
-        asked = prompted_field(turn["answer"])
+    slots = Slots(dict(state.facts), set(state.unknown)) if has_state else Slots()
+    asked = state.last_question if has_state else None
+    if not has_state:
+        for turn in reversed(active):
+            collect(slots, normalize(turn["question"]).strip(), asked)
+            asked = prompted_field(turn["answer"])
     previous_values = slots.values.copy()
     collect(slots, current, asked)
     progressed = previous_values != slots.values
@@ -163,6 +165,10 @@ def mail_consultation(message, history, catalog, *, new_product=False):
     else:
         question = None
     prompt = f"{PREFIX}. {question}" if question else None
+    if state is not None:
+        state.facts = slots.values
+        state.unknown = sorted(slots.unknown)
+        state.last_question = prompted_field(prompt) if prompt else None
     previous_prompts = {turn["answer"] for turn in active}
     if prompt and not slots.unknown and (prompt not in previous_prompts or progressed):
         if progressed and prompt in previous_prompts and platform:
@@ -178,6 +184,7 @@ def mail_consultation(message, history, catalog, *, new_product=False):
     subject = (f"Защита корпоративной почты. Ящики: {slots.values.get('seats', 'не уточнено')}. "
                f"Платформа: {platform or 'не уточнена'}. Угрозы: {threats}. "
                f"Бюджет: {price_text(int(budget)) if budget is not None else 'не указан'}.")
-    text = (f"{CONCLUSION} для точного подбора нужно подтвердить платформу и условия лицензии. "
+    known = f" Учёл {platform}." if platform else ""
+    text = (f"{CONCLUSION}{known} По имеющимся данным не удалось подтвердить подходящую лицензию. "
             "Менеджер проверит варианты по уже собранным данным.")
     return text, [], subject, question is None and not slots.unknown

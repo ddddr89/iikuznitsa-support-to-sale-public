@@ -7,7 +7,7 @@ from app.catalog_matching import MODEL_DETAIL, normalize_codes
 
 
 DOCUMENT = r"(?:кп|коммерческ\w+ предложени\w*|(?:проект\s+)?счет(?:а|у|ом)?)"
-REQUEST = r"(?:подготов\w*|сформир\w*|сдела\w*|выстав\w*|выпиш\w*|пришл\w*|отправ\w*|запрос\w*|дайте|нуж(?:ен|ны|но)|хочу|можно)"
+REQUEST = r"(?:предостав\w*|подготов\w*|сформир\w*|сдела\w*|выстав\w*|выпиш\w*|пришл\w*|отправ\w*|запрос\w*|дайте|нуж(?:ен|ны|но)|хочу|можно)"
 INTENT = re.compile(rf"\b{REQUEST}\b[^.!?]{{0,70}}\b{DOCUMENT}\b|^{DOCUMENT}(?:\s+на\s+[^.!?]+|,?\s+пожалуйста)?[.!?]?$")
 SKU_TOKEN = r"[a-z0-9]+(?:[-_][a-z0-9]+)*"
 REFERENCE = re.compile(
@@ -24,6 +24,7 @@ AMOUNT = r"(?:[+-]?\d+(?:[.,]\d+)?|" + "|".join(WORDS) + ")"
 PRODUCT_COUNT = (r"монитор\w*|ноутбук\w*|накопител\w*|диск\w*|коммутатор\w*|"
                  r"видеокарт\w*|принтер\w*|планшет\w*|сервер\w*|ssd|hdd")
 QUANTITY = re.compile(rf"(?<![\w.,+\-])({AMOUNT})\s*(?:штук\w*|шт\.?|единиц\w*|{PRODUCT_COUNT})\b")
+COUNT_BEFORE_MODEL = re.compile(rf"(?<![\w.,+\-])({AMOUNT})\s+(?=[a-z]+\s+(?:[a-z0-9-]*\d[a-z0-9-]*)\b)")
 LABELLED_QUANTITY = re.compile(rf"\bколичество\s*[:—-]?\s*({AMOUNT})(?![\w.,])")
 QUANTITY_ONLY = re.compile(
     rf"(?:(?:нужн(?:ы|о)|хочу|возьму|тогда|теперь|давайте|"
@@ -55,7 +56,7 @@ def number(value):
 
 
 def quantity_in(text, *, standalone=False):
-    values = {match[1] for pattern in (QUANTITY, LABELLED_QUANTITY) for match in pattern.finditer(text)}
+    values = {match[1] for pattern in (QUANTITY, LABELLED_QUANTITY, COUNT_BEFORE_MODEL) for match in pattern.finditer(text)}
     if not values and standalone and (match := QUANTITY_ONLY.fullmatch(text)):
         values = {match[1]}
     if not values:
@@ -105,14 +106,15 @@ def recently_shown(catalog, history, sku, models):
     return None, quantity
 
 
-def document_request(message, trusted_history, catalog):
+def document_request(message, trusted_history, catalog, *, selection=None, pending=None):
     """Возвращает план выдачи либо уточнение из текущего и серверных ходов."""
     text = normalize_codes(message).strip()
     if re.match(r"^(?:подскажите,?\s+)?(?:как|что нужно|какие документы|где|почему)\b", text):
         return None
     if re.search(r"\bне\s+(?:надо|нужно|хочу|готовьте|формируйте|выставляйте|отправляйте)\b", text):
         return None
-    pending = bool(trusted_history and trusted_history[-1]["answer"].startswith(FOLLOW_UP_PREFIXES))
+    if pending is None:
+        pending = bool(trusted_history and trusted_history[-1]["answer"].startswith(FOLLOW_UP_PREFIXES))
     explicit = explicit_references(message)
     prior_need_sku = pending and "артикул" in trusted_history[-1]["answer"]
     if prior_need_sku and re.fullmatch(SKU_TOKEN, text) and (
@@ -130,6 +132,9 @@ def document_request(message, trusted_history, catalog):
     shown, previous_quantity = recently_shown(catalog, trusted_history, product["sku"] if product else None, models)
     if not explicit:
         product = shown
+        if selection and selection.get("sku") and not models:
+            product = catalog_item(catalog, selection["sku"])
+            previous_quantity = selection.get("quantity")
         if pending and not product:
             selection = trusted_history[-1].get("product_context")
             previous_references = {selection["sku"]} if selection else explicit_references(trusted_history[-1]["answer"])

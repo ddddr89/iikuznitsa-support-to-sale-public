@@ -438,9 +438,8 @@ class CatalogMatchingTests(TestCase):
                 Turn(question="Нужен Dell U2424H", answer="Артикул dell.")
             ]), request)
         self.assertEqual(result["products"], [])
-        self.assertEqual(model.call_args.args[1], [])
-        self.assertEqual(model.call_args.kwargs["history"], [])
-        self.assertIsNone(model.call_args.kwargs["search"])
+        model.assert_not_called()
+        self.assertIn("ЭДО", result["answer"])
 
     def test_recalculation_preserves_selected_product_without_repeat_search(self):
         from hashlib import sha256
@@ -476,3 +475,57 @@ class CatalogMatchingTests(TestCase):
         self.assertIn("Мои заявки", second["answer"])
         self.assertIn("повторно отправлять его не нужно", second["answer"])
         self.assertNotIn("escalation", second)
+
+    def test_dialogue_state_prevents_unrelated_cards_and_uses_the_selected_price(self):
+        from hashlib import sha256
+
+        from app.main import SESSION_COOKIE
+
+        token = "J" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        comparison = ask("Сравните Dell U2424H и Dell U2424HE по цене.")
+        self.assertEqual([p["sku"] for p in comparison["products"]], ["dell", "dell-similar"])
+        first = ask("Выбираю более дешёвый, нужны три штуки.")
+        self.assertEqual(first["products"], [])
+        self.assertIn("3 монитора", first["answer"])
+        self.assertIn("ЭДО", ask("Куда направить документы для ЭДО?")["answer"])
+        second = ask("Решили всё-таки начать с одного. Какой итог?")
+        self.assertEqual(second["products"], [])
+        self.assertIn("1 монитор", second["answer"])
+        document = ask("Предоставьте счёт на выбранный товар.")
+        quote = self.commercial.get_quote(document["documents"]["id"], owner)
+        self.assertEqual(quote["items"][0]["sku"], "dell")
+        self.assertEqual(quote["items"][0]["quantity"], 1)
+        self.assertNotIn("dialogue", self.commercial.chat_history(owner)[-1])
+
+        ask("Нужен внешний SSD 1 ТБ.")
+        revised = ask("Что именно подтверждает USB-C?")
+        self.assertEqual(revised["products"], [])
+        self.assertIn("не нашлось", revised["answer"])
+
+    def test_handoff_reuses_owner_scoped_lead_and_preserves_delivery_details(self):
+        from hashlib import sha256
+
+        from app.main import SESSION_COOKIE
+
+        token = "H" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        first = ask("Ищу два Dell U2424H с доставкой в Норильск.")
+        lead_id = first["escalation"]["id"]
+        self.assertIn("За 2 шт.", first["answer"])
+        self.assertIn("Добавил данные", ask("Индекс 663300. Количество прежнее.")["answer"])
+        self.assertEqual(ask("Позовите менеджера.")["escalation"]["id"], lead_id)
+        self.assertEqual(len(self.commercial.client_leads(owner)), 1)
+        self.assertIsNone(self.commercial.append_customer_detail("another-session", lead_id, "проверка"))

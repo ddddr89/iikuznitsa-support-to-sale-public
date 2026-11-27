@@ -170,19 +170,25 @@ class Commercial:
         for turn in turns:
             selection = turn.pop("product_context")
             if include_context and selection:
-                turn["product_context"] = json.loads(selection)
+                context = json.loads(selection)
+                if "dialogue" in context:
+                    turn["dialogue"] = context["dialogue"]
+                    context = context.get("product")
+                if context:
+                    turn["product_context"] = context
             if (quote_id := turn.pop("quote_id")) is not None:
                 turn["documents"] = {"id": quote_id}
             if not include_times:
                 turn.pop("created_at")
         return turns
 
-    def record_turn(self, owner, question, answer, *, quote_id=None, product_context=None):
+    def record_turn(self, owner, question, answer, *, quote_id=None, product_context=None, dialogue=None):
         with self.connection() as db:
             turn = db.execute("""
                 INSERT INTO session_turns (owner, question, answer, created_at, product_context)
                 VALUES (?, ?, ?, ?, ?)
             """, (owner, question, answer, datetime.now(timezone.utc).isoformat(),
+                  json.dumps({"product": product_context, "dialogue": dialogue}) if dialogue else
                   json.dumps(product_context) if product_context else None)).lastrowid
             if quote_id is not None:
                 db.execute("INSERT INTO session_turn_documents VALUES (?, ?)", (turn, quote_id))
@@ -274,6 +280,25 @@ class Commercial:
                     VALUES (?, 'closure_reason', ?, ?)
                 """, (lead_id, closure_reason, now))
         return self.lead_detail(lead_id)
+
+    def append_customer_detail(self, owner, lead_id, message):
+        """Дополняет ровно выбранное открытое обращение той же сессии."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            lead = db.execute("""
+                SELECT leads.id, leads.status FROM leads JOIN lead_sessions ON leads.id = lead_id
+                WHERE owner = ? AND leads.id = ? AND leads.status IN ('escalated', 'in_progress')
+            """, (owner, lead_id)).fetchone()
+            if lead is None:
+                return None
+            db.execute("""
+                INSERT INTO lead_activity (lead_id, role, content, created_at)
+                SELECT ?, 'client', ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM lead_activity WHERE lead_id = ? AND role = 'client' AND content = ?
+                )
+            """, (lead_id, message, datetime.now(timezone.utc).isoformat(), lead_id, message))
+            return dict(lead)
 
     def add_delivery_details(self, owner, message):
         """Дополняет открытое обращение владельца данными для расчёта доставки."""
