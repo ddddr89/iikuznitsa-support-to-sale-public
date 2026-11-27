@@ -26,7 +26,7 @@ def windows_server_advice(full):
     missing = []
     version = re.search(r"\b20(?:16|19|22|25)\b", full)
     sockets = re.search(r"\b(\d{1,2})\s*(?:cpu|процессор\w*)\s+по\s+(\d{1,3})\s*яд", full)
-    # An unqualified core count is informative but does not establish the socket minima.
+    # Общего числа ядер недостаточно, чтобы проверить минимум для каждого процессора.
     total = re.search(r"\b(\d{1,3})\s*(?:физическ\w*\s+)?яд", full)
     vms = re.search(r"\b(\d{1,3}|одна|две|три|четыре)\s+(?:виртуальн\w*\s+машин\w*|вм)\b", full)
     if not version:

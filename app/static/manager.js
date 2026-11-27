@@ -341,7 +341,7 @@ leadUpdateForm.addEventListener("submit", async (event) => {
       const { items, waiting_count: waiting } = await request("/manager/leads", { token });
       if (currentSession === session) showLeads(items, waiting);
     } catch {
-      // The updated detail remains available when list refresh fails.
+      // Сохранённое обращение доступно даже при сбое обновления списка.
     }
   } catch (error) {
     if (currentSession === session && selected === lead) status("lead-update-status", error.message, true);

@@ -39,7 +39,7 @@ def template_branding(path, _modified_ns):
         check=True,
         timeout=10,
     ).stdout
-    # Normalized coordinates measured against the customer's one-page A4 PDF.
+    # Координаты долей страницы рассчитаны по одностраничному шаблону КП формата A4.
     regions = ((.06, .04, .46, .174), (.17, .912, .84, .981))
     with Image.open(BytesIO(raster)) as page:
         width, height = page.size

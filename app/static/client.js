@@ -45,7 +45,7 @@ function renderAnswer(result, intent) {
       summary.append(link);
       answer.append(summary);
     } catch {
-      // Ignore invalid source URLs.
+      // Некорректная ссылка на источник не мешает показать ответ.
     }
   }
   const products = element("div", undefined, "cards");
@@ -84,7 +84,7 @@ function showProducts(container, products, offerDocuments = false) {
           row.append(link);
         }
       } catch {
-        // The product remains selectable when the source URL is absent or malformed.
+        // Товар можно выбрать даже без корректной ссылки на его страницу.
       }
     }
     const documents = offerDocuments && product.price_minor !== null;
@@ -270,7 +270,7 @@ async function loadCatalogSource() {
     provenance.textContent = details.join(" · ");
     provenance.hidden = false;
   } catch {
-    // Catalog search remains available when status is unavailable.
+    // Поиск по каталогу доступен даже без сведений о его снимке.
   }
 }
 
@@ -290,12 +290,12 @@ async function restoreChat() {
         text: content, author: "Менеджер", created_at,
       })));
     } catch {
-      // Replies will be retried by polling without blocking chat history.
+      // Следующий опрос повторит загрузку ответов менеджера.
     }
     timeline.sort((first, second) => first.created_at.localeCompare(second.created_at));
     for (const entry of timeline) addMessage(entry.text, entry.customer, entry.author);
   } catch {
-    // A temporarily unavailable history should not block a new conversation.
+    // При сбое загрузки истории новый диалог остаётся доступен.
   }
 }
 
@@ -316,7 +316,7 @@ async function refreshManagerMessages() {
       for (const item of batch) addMessage(item.content, false, "Менеджер");
     } while (batch.length === 100);
   } catch {
-    // Another refresh will retry after a temporary error.
+    // После временного сбоя следующий опрос повторит запрос.
   } finally {
     pollingManager = false;
   }

@@ -38,7 +38,7 @@ export function displayText(value) {
   let decoded = String(value);
   for (let pass = 0; pass < 2; pass++) {
     const next = decoded.replace(entities, (entity) => {
-      // This assignment receives only one entity token, never arbitrary markup.
+      // Передаём только одну предварительно проверенную HTML-сущность.
       entityDecoder.innerHTML = entity;
       return entityDecoder.value;
     });

@@ -25,7 +25,7 @@ MODEL = re.compile(r"\b(?:[a-z]{1,6}\d{2,}[a-z][a-z0-9]*|\d{2,}[a-z]\d[a-z0-9]+)
 MODEL_DETAIL = re.compile(
     r"\b(?:[a-z]{1,9}\d{1,}[a-z0-9]*|\d{2,}[a-z][a-z0-9]+)(?:-[a-z0-9]+)*\b"
 )
-# These Dell model families name a monitor even in short, category-free queries.
+# По этим сериям Dell можно распознать монитор даже без указания категории.
 DELL_DISPLAY = re.compile(r"\bdell(?: technologies)?\s+([pu]\d{4}[a-z][a-z0-9]*)\b")
 CATALOG_TOOL_REQUEST = re.compile(r"\b(?:вызови(?:те)?\s+поиск|инструмент\w*\s+поиск|поиск\w*\s+по\s+каталог\w*)\b")
 SKU_REFERENCE = re.compile(r"\b(?:артикул\w*|код\w*|sku)\s*[:№#]?\s*(\d{4,12})\b")
@@ -42,8 +42,8 @@ CATEGORIES = {
     "office": ("Офисные пакеты программ Microsoft Office",),
     "memory": ("Оперативная память",),
 }
-# Exact manufacturer codes, checked against the vendor specifications. The feed
-# lacks these fields. Do not transfer specifications to a different revision/SKU.
+# Фид не содержит этих характеристик. Данные из спецификаций применяем только
+# к точным кодам производителя, для которых проверена ревизия.
 VERIFIED_MODELS = (
     ("27e1n1900ae-01", "ips usb-c 65 вт"),
     ("sg3428mp", "управляемый 24 x gigabit poe+"),
@@ -163,7 +163,7 @@ class ProductScope:
         if self.category == "ssd" and (EXTERNAL.search(facts) or re.search(r"\busb\b", facts)):
             return False
         if self.category in {"external", "ssd"}:
-            # External SSDs can have “HDD” in the title, so prefer the media field.
+            # В заголовках внешних SSD встречается HDD, поэтому приоритет у поля типа накопителя.
             media = DRIVE_TYPE.fullmatch(re.split(r"[,•]", description, 1)[0].strip()) or DRIVE_TYPE.search(name)
             if self.drive_type and (not media or media[0] != self.drive_type):
                 return False
@@ -188,7 +188,7 @@ def product_scope(query, previous=""):
         return None
     category = min(mentions or prior_mentions)[1]
     if category == "drive":
-        # A component mentioned in a laptop request does not change the main category.
+        # Упоминание комплектующего в запросе о ноутбуке не меняет категорию товара.
         category = "external" if EXTERNAL.search(current or prior) or (not mentions and EXTERNAL.search(prior)) else "ssd"
         if category == "ssd" and not (DRIVE_TYPE.search(current + " " + prior) or re.search(r"\bnvme\b", current)):
             return None
