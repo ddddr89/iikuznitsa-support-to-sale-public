@@ -495,6 +495,11 @@ def create_app(db_path=None):
         elif license_result:
             answer, products, searched = license_result
             result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif state.route == "comparison" and not new_route and re.search(
+            r"\b(?:зарядк\w*|проводн\w* сеть|одним кабелем)\b", current
+        ) and (followup := comparison_details(compared, recommendation_only=True))[0]:
+            answer, sources = followup
+            result = {"answer": answer, "provider": "catalog", "actions": []}
         elif (comparison := compare_monitor_models(body.message, catalog) or (
             compare_monitor_models(state.query if state.route == "comparison" else earlier, catalog)
             if re.search(r"\b(?:разница в цене|чем отличаются|зарядк\w*|проводн\w* сеть|одним кабелем)\b", current)

@@ -214,17 +214,19 @@ MONITOR_INTERFACES = {
 }
 
 
-def comparison_details(items):
+def comparison_details(items, *, recommendation_only=False):
     """Добавляет различия только для моделей с подтверждёнными спецификациями."""
     models = [code for item in items for code in MODEL.findall(normalize_codes(item["name"]))
               if code in MONITOR_INTERFACES]
     if len(models) != len(items) or not models:
         return "", []
-    lines = [f"{code.upper()} — {MONITOR_INTERFACES[code][0]}" for code in models]
+    lines = [] if recommendation_only else [f"{code.upper()} — {MONITOR_INTERFACES[code][0]}" for code in models]
     if set(models) == MONITOR_INTERFACES.keys():
         lines.append("Для одного кабеля, зарядки и проводной сети выбирайте U2424HE. "
-                     "Проверьте, что USB-C ноутбука поддерживает DisplayPort Alt Mode и зарядку USB-C. "
-                     "Если достаточно HDMI или DisplayPort и отдельной зарядки, подойдёт U2424H.")
+                     "Через USB-C он даёт до 90 Вт и подключает сеть через RJ45. "
+                     "Проверьте, что ноутбук поддерживает видео и зарядку по USB-C.")
+        if not recommendation_only:
+            lines.append("Если достаточно HDMI или DisplayPort и отдельной зарядки, подойдёт U2424H.")
     links = [{"title": f"Спецификация Dell {code.upper()}", "url": MONITOR_INTERFACES[code][1]} for code in models]
     return "\n\n".join(lines), links
 
@@ -245,7 +247,9 @@ def compare_monitor_models(question, catalog):
         if found is None:
             return "Уточните артикулы обеих моделей, чтобы сравнить подтверждённые карточки.", []
         items.append(found)
-    lines = ["\n".join(part for part in (item_text(item), item["description"]) if part) for item in items]
+    lines = [item_text(item) if code in MONITOR_INTERFACES else
+             "\n".join(part for part in (item_text(item), item["description"]) if part)
+             for code, item in zip(codes, items)]
     a, b = items
     if a["price_minor"] is not None and b["price_minor"] is not None:
         difference = abs(a["price_minor"] - b["price_minor"])
