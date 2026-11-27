@@ -6,11 +6,15 @@ import logging
 import os
 import sqlite3
 from collections.abc import Callable
+from datetime import datetime, timezone
+from decimal import Decimal
 from functools import lru_cache
 from http.client import HTTPException
 from logging.handlers import RotatingFileHandler
+from time import monotonic
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from uuid import uuid4
 
 MAX_RESPONSE_BYTES = 131_072
 MAX_MODEL_PAYLOAD_BYTES = 28_000
@@ -115,29 +119,65 @@ def usage_logger(path):
     return isolated
 
 
-def record_usage(response, route, calls):
-    """Пишет только числовые счётчики ответа; без текста, заголовков и идентификаторов."""
-    usage = response.get("usage")
-    fields = []
+def usage_fields(response):
+    """Берёт из ответа провайдера только модель и два целочисленных счётчика."""
+    data = response.get("usage")
+    model = response.get("model")
+    model = model.rsplit("/", 1)[-1] if isinstance(model, str) else ""
+    row = {"model": "yandexgpt-5.1" if model == "yandexgpt-5.1" else None}
     for field in ("input_tokens", "output_tokens"):
-        value = usage.get(field) if isinstance(usage, dict) else None
-        fields.append(value if type(value) is int and 0 <= value <= 1_000_000 else None)
-    usage_logger(os.getenv("APP_MODEL_USAGE_LOG")).info(
-        "model_usage route=%s calls=%s input=%s output=%s partial=%s",
-                   route, calls, *fields, calls != 1 or None in fields)
+        value = data.get(field) if isinstance(data, dict) else None
+        row[field] = value if type(value) is int and 0 <= value <= 1_000_000 else None
+    return row
 
 
-def call_model(url, payload, headers):
+def record_execution(request_id, route, started, calls, success, *, execution_id=None, expected=None):
+    """Пишет одну обезличенную строку за попытку маршрута и считает известные токены один раз."""
+    complete = expected is not None and expected == len(calls) and all(
+        row[field] is not None for row in calls for field in ("input_tokens", "output_tokens")
+    )
+    counters = {field: sum(row[field] or 0 for row in calls)
+                for field in ("input_tokens", "output_tokens")}
+    total = sum(counters.values()) if complete else None
+    cost = None
+    if complete and all(row["model"] == "yandexgpt-5.1" for row in calls):
+        cost = str((Decimal(total) * Decimal("0.0008") / Decimal("1.22")).quantize(Decimal("0.00000001")))
+    row = {
+        "request_id": request_id, "execution_id": execution_id, "route": route,
+        "finished_utc": datetime.now(timezone.utc).isoformat(),
+        "duration_ms": round((monotonic() - started) * 1000),
+        "success": success, "model_calls": expected,
+        "calls": calls, "observed_input_tokens": counters["input_tokens"],
+        "observed_output_tokens": counters["output_tokens"],
+        "total_tokens": total, "estimated_rub_excl_vat": cost, "partial": not complete,
+    }
+    usage_logger(os.getenv("APP_MODEL_USAGE_LOG")).info("model_execution %s", json.dumps(row, separators=(",", ":")))
+
+
+def n8n_usage(response, expected):
+    trace = response.get("telemetry")
+    rows = trace.get("calls") if isinstance(trace, dict) else None
+    execution_id = trace.get("execution_id") if isinstance(trace, dict) else None
+    if not isinstance(execution_id, str) or not execution_id.isascii() or not execution_id.isdecimal() or len(execution_id) > 24:
+        execution_id = None
+    if isinstance(rows, list) and len(rows) == expected and all(isinstance(row, dict) for row in rows):
+        return execution_id, [{"ordinal": index, **usage_fields(row)} for index, row in enumerate(rows, 1)]
+    # Старый workflow передаёт только последний ответ; не додумываем первый.
+    return execution_id, [{"ordinal": expected, **usage_fields(response)}]
+
+
+def call_model(url, payload, headers, report):
     if _json_size(payload) > MAX_MODEL_PAYLOAD_BYTES:
         raise ValueError("Model payload exceeds size limit")
     try:
         response = post_json(url, payload, headers, timeout=8)
     except PROVIDER_ERRORS:
-        if url == YANDEX_URL:
-            record_usage({}, "direct", 1)
+        if report is not None:
+            report.append({"ordinal": len(report) + 1, **usage_fields({})})
         raise
-    if url == YANDEX_URL:
-        record_usage(response, "direct", 1)
+    if report is not None:
+        response_model = response.get("model") or payload["model"]
+        report.append({"ordinal": len(report) + 1, **usage_fields({**response, "model": response_model})})
     return _output(response)
 
 
@@ -155,7 +195,7 @@ def _answer(text):
 
 
 def _send_model(url, model, headers, message, products, actions,
-                search=None, required_tool=False, *, knowledge=(), history=()):
+                search=None, required_tool=False, *, knowledge=(), history=(), report=None):
     """Принимает текст и контекст, выполняет не более одного поиска и возвращает ответ."""
     payload = {
         "model": model,
@@ -175,7 +215,7 @@ def _send_model(url, model, headers, message, products, actions,
         payload["tool_choice"] = "required" if required_tool else "auto"
         payload["parallel_tool_calls"] = False
 
-    output = call_model(url, payload, headers)
+    output = call_model(url, payload, headers, report)
     calls = [item for item in output if item.get("type") == "function_call"]
     selected = None
     if calls:
@@ -214,7 +254,7 @@ def _send_model(url, model, headers, message, products, actions,
             "output": json.dumps(_cards(found), ensure_ascii=False),
         }]
         payload["tool_choice"] = "none"
-        output = call_model(url, payload, headers)
+        output = call_model(url, payload, headers, report)
         if any(item.get("type") == "function_call" for item in output):
             raise ValueError("Tool call limit exceeded")
     elif required_tool:
@@ -231,7 +271,7 @@ def _send_model(url, model, headers, message, products, actions,
 
 
 def _send_yandex(key, folder, message, products, actions,
-                 search=None, required_tool=False, *, knowledge=(), history=()):
+                 search=None, required_tool=False, *, knowledge=(), history=(), report=None):
     model = os.getenv("YANDEX_MODEL", "yandexgpt")
     return _send_model(
         YANDEX_URL, f"gpt://{folder}/{model}",
@@ -240,7 +280,7 @@ def _send_yandex(key, folder, message, products, actions,
             "OpenAI-Project": folder,
             "x-data-logging-enabled": "false",
         },
-        message, products, actions, search, required_tool, knowledge=knowledge, history=history,
+        message, products, actions, search, required_tool, knowledge=knowledge, history=history, report=report,
     )
 
 
@@ -266,7 +306,9 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
     url = os.getenv("N8N_WEBHOOK_URL")
     secret = os.getenv("N8N_WEBHOOK_SECRET")
 
+    request_id = uuid4().hex
     if url and secret:
+        started = monotonic()
         try:
             result = post_json(
                 url, context,
@@ -279,7 +321,10 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
             actions.append({"type": "route_n8n", "status": "done"})
             tool_status = result.get("tool_status")
             if provider == "yandex":
-                record_usage(result, "n8n", 2 if tool_status in ("done", "error") else 1)
+                expected = 2 if tool_status in ("done", "error") else 1
+                execution_id, calls = n8n_usage(result, expected)
+                record_execution(request_id, "n8n", started, calls, True,
+                                 execution_id=execution_id, expected=expected)
             if tool_status in ("done", "error"):
                 actions.append({"type": "tool_catalog_search", "status": tool_status})
             actions.append({"type": f"model_{provider}", "status": "done"})
@@ -297,19 +342,25 @@ def reply(message: str, products: list[dict], *, search: Search | None = None,
                 response["products"] = list(selected.values())[:5]
             return response
         except PROVIDER_ERRORS:
-            record_usage({}, "n8n", "unknown")
+            record_execution(request_id, "n8n", started, [], False)
             actions.append({"type": "route_n8n", "status": "error"})
 
     yandex_key, folder = os.getenv("YANDEX_API_KEY"), os.getenv("YANDEX_FOLDER_ID")
     if yandex_key and folder:
+        started = monotonic()
+        calls = []
         try:
             answer, selected = _send_yandex(
                 yandex_key, folder, message, model_products, actions, search,
-                knowledge=knowledge, history=history,
+                knowledge=knowledge, history=history, report=calls,
             )
         except PROVIDER_ERRORS:
+            record_execution(request_id, "direct", started, calls, False,
+                             execution_id=request_id + "-direct", expected=len(calls))
             actions.append({"type": "model_yandex", "status": "error"})
         else:
+            record_execution(request_id, "direct", started, calls, True,
+                             execution_id=request_id + "-direct", expected=len(calls))
             actions.append({"type": "model_yandex", "status": "done"})
             result = {"answer": answer, "provider": "yandex", "actions": actions}
             if selected is not None:

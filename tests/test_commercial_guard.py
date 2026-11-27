@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -54,7 +55,47 @@ class CommercialGuardTests(TestCase):
         self.assertEqual(result["provider"], "yandex")
         self.assertLessEqual(_json_size(post.call_args.args[1]), MAX_CONTEXT_BYTES)
         line = capture.output[0]
-        self.assertIn("calls=2 input=120 output=32 partial=True", line)
+        entry = json.loads(line.split("model_execution ", 1)[1])
+        self.assertEqual(entry["model_calls"], 2)
+        self.assertEqual(entry["calls"][0]["ordinal"], 2)
+        self.assertEqual(entry["observed_input_tokens"], 120)
+        self.assertTrue(entry["partial"])
+        self.assertIsNone(entry["total_tokens"])
         self.assertNotIn("Личное сообщение", line)
         self.assertNotIn("fixture-secret", line)
         self.assertEqual(MAX_OUTPUT_TOKENS, 650)
+
+    def test_n8n_two_calls_keep_counters_separate_and_compute_cost_once(self):
+        counters = [{"model": "yandexgpt-5.1", "usage": {"input_tokens": 216, "output_tokens": 18}},
+                    {"model": "yandexgpt-5.1", "usage": {"input_tokens": 319, "output_tokens": 48}}]
+        payload = {"provider": "yandex", "answer": "Ответ", "tool_status": "done",
+                   "usage": counters[-1]["usage"],
+                   "telemetry": {"execution_id": "207", "calls": counters, "message": "secret body"}}
+        with patch.dict("os.environ", {"N8N_WEBHOOK_URL": "http://example.invalid",
+                                      "N8N_WEBHOOK_SECRET": "fixture-secret"}, clear=True), patch(
+            "app.ai.post_json", return_value=payload
+        ), self.assertLogs("uvicorn.error", "INFO") as capture:
+            result = reply("Проверка", [])
+        entry, = [json.loads(line.split("model_execution ", 1)[1]) for line in capture.output]
+        self.assertEqual(entry["execution_id"], "207")
+        self.assertEqual([(c["input_tokens"], c["output_tokens"]) for c in entry["calls"]], [(216, 18), (319, 48)])
+        self.assertEqual(entry["total_tokens"], 601)
+        self.assertEqual(entry["estimated_rub_excl_vat"], "0.39409836")
+        self.assertNotIn("telemetry", result)
+        self.assertNotIn("secret body", capture.output[0])
+
+    def test_fallback_shares_request_id_without_double_counting(self):
+        good = {"output": [{"type": "message", "content": [{"type": "output_text", "text": "Ответ"}]}],
+                "usage": {"input_tokens": 100, "output_tokens": 20}}
+        cfg = {"N8N_WEBHOOK_URL": "http://example.invalid", "N8N_WEBHOOK_SECRET": "fixture-secret",
+               "YANDEX_API_KEY": "fixture-key", "YANDEX_FOLDER_ID": "fixture-folder", "YANDEX_MODEL": "yandexgpt-5.1"}
+        with patch.dict("os.environ", cfg, clear=True), patch(
+            "app.ai.post_json", side_effect=[OSError("fixture error"), good]
+        ), self.assertLogs("uvicorn.error", "INFO") as capture:
+            self.assertEqual(reply("Проверка", [])["provider"], "yandex")
+        n8n, direct = [json.loads(line.split("model_execution ", 1)[1]) for line in capture.output]
+        self.assertEqual(n8n["request_id"], direct["request_id"])
+        self.assertIsNone(n8n["total_tokens"])
+        self.assertFalse(n8n["success"])
+        self.assertEqual(direct["total_tokens"], 120)
+        self.assertTrue(direct["success"])

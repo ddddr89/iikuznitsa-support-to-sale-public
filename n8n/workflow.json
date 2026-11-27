@@ -91,10 +91,10 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const items = Array.isArray($json.output) ? $json.output : [];\nconst answer = items.filter(i => i.type === 'message')\n  .flatMap(i => i.content ?? []).filter(i => i.type === 'output_text' && typeof i.text === 'string')\n  .map(i => i.text.trim()).filter(Boolean).join('\\n');\nconst searched = $('Поиск в каталоге').isExecuted;\nconst found = searched ? $('Поиск в каталоге').first().json.items : undefined;\nconst tool_status = searched ? (Array.isArray(found) ? 'done' : 'error') : undefined;\nreturn { json: { answer, provider: 'yandex', usage: $json.usage,\n  tool_status, products: Array.isArray(found) ? found.slice(0, 5) : undefined } };"
+        "jsCode": "const items = Array.isArray($json.output) ? $json.output : [];\nconst answer = items.filter(i => i.type === 'message')\n  .flatMap(i => i.content ?? []).filter(i => i.type === 'output_text' && typeof i.text === 'string')\n  .map(i => i.text.trim()).filter(Boolean).join('\\n');\nconst searched = $('Поиск в каталоге').isExecuted;\nconst found = searched ? $('Поиск в каталоге').first().json.items : undefined;\nconst tool_status = searched ? (Array.isArray(found) ? 'done' : 'error') : undefined;\nconst usageOnly = (response) => ({\n  model: typeof response.model === 'string' && response.model.split('/').pop() === 'yandexgpt-5.1'\n    ? 'yandexgpt-5.1' : null,\n  usage: {\n    input_tokens: Number.isSafeInteger(response.usage?.input_tokens) ? response.usage.input_tokens : null,\n    output_tokens: Number.isSafeInteger(response.usage?.output_tokens) ? response.usage.output_tokens : null,\n  },\n});\nconst calls = [usageOnly($('Запрос к Яндексу').first().json)];\nif ($('Яндекс после поиска').isExecuted) calls.push(usageOnly($json));\nconst telemetry = { execution_id: String($execution.id), calls };\nreturn { json: { answer, provider: 'yandex', usage: $json.usage, telemetry,\n  tool_status, products: Array.isArray(found) ? found.slice(0, 5) : undefined } };"
       },
       "notesInFlow": true,
-      "notes": "Назначение — разбор ответа YandexGPT.\nВход — Первый или повторный ответ YandexGPT, при наличии — результат поиска.\nДействие — Извлекает текст и счётчики токенов последнего вызова, отмечает результат поиска.\nВыход — Текст, поставщик ответа и до пяти карточек найденных товаров."
+      "notes": "Назначение — разбор ответа YandexGPT.\nВход — Первый или повторный ответ YandexGPT, при наличии — результат поиска.\nДействие — Извлекает текст и отдельно передаёт ID исполнения и числовой usage каждого ответа YandexGPT.\nВыход — Текст, поставщик ответа и до пяти карточек найденных товаров."
     },
     {
       "id": "1b3d0ecc-7626-5dce-8795-80cd4455b91b",
@@ -195,7 +195,7 @@
         }
       },
       "notesInFlow": true,
-      "notes": "Назначение — отправка ответа.\nВход — Текст ответа либо признак недоступности поставщиков.\nДействие — Возвращает HTTP 200 с answer, provider и доступными полями tool_status, products, usage или HTTP 503 при отсутствии текста.\nВыход — Ответ вебхука для FastAPI, который передаёт текст клиенту или использует прямой маршрут."
+      "notes": "Назначение — отправка ответа.\nВход — Текст ответа либо признак недоступности поставщиков.\nДействие — Возвращает HTTP 200 с answer, provider и доступными полями tool_status, products, usage, telemetry или HTTP 503 при отсутствии текста.\nВыход — Ответ вебхука для FastAPI, который передаёт текст клиенту или использует прямой маршрут."
     },
     {
       "id": "1e539759-9c2e-4964-bc1b-256bbd760f9b",
