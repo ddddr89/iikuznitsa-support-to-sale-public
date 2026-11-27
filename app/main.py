@@ -57,6 +57,7 @@ UNRESOLVED_CATALOG = (
     "Подтверждённую поставку лицензии в каталоге найти не удалось",
 )
 SYSTEM_CONTACT = "Контакт не указан · ответ в чате"
+CARD_CAPACITY = re.compile(r"\b(?:на\s+)?(\d+(?:[.,]\d+)?)\s*(тб|tb|гб|gb)\b")
 
 
 def render_documents(quote, kind):
@@ -64,10 +65,19 @@ def render_documents(quote, kind):
     return render_pdf({**quote, "items": lines}, kind)
 
 
+def normalize_card_name(text):
+    """Сводит «на 2 ТБ» и «2TB» к одной записи, сохраняя значение и единицу ёмкости."""
+    units = {"тб": "tb", "гб": "gb"}
+    return CARD_CAPACITY.sub(
+        lambda match: match[1].replace(",", ".") + units.get(match[2], match[2]),
+        normalize_codes(text),
+    )
+
+
 def recommended_products(catalog, candidates, answer):
     skus = list(dict.fromkeys(item["sku"] for item in candidates))
     current = catalog.get_many(skus)
-    answer = normalize_codes(answer)
+    answer = normalize_card_name(answer)
     answer_models = {match[0]: match.start() for match in MODEL_DETAIL.finditer(answer)}
     positions = []
     for sku in skus:
@@ -75,7 +85,7 @@ def recommended_products(catalog, candidates, answer):
         if item is None:
             continue
         exact = re.search(rf"(?<![\w-]){re.escape(sku.casefold())}(?![\w-])", answer)
-        name = normalize_codes(item["name"])
+        name = normalize_card_name(item["name"])
         name_at = answer.find(name)
         model_at = min((answer_models[code] for code in MODEL_DETAIL.findall(name)
                         if code in answer_models and len(code) >= 5), default=-1)

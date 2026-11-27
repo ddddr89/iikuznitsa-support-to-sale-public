@@ -42,6 +42,7 @@ class CatalogMatchingTests(TestCase):
             ("poe", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports, PoE+"),
             ("poe-unknown", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports"),
             ("gpu-wrong", "Видеокарта RTX 3050", "Видеокарты", ""),
+            ("256294", "Внешний HDD ADATA DashDrive 2TB", "Внешние HDD", "HDD, USB"),
         ]
         rows = ((sku, dict(sku=sku, name=name, category=category, description=description,
                            url="", price_minor=str(index * 100), currency="RUB"))
@@ -87,6 +88,18 @@ class CatalogMatchingTests(TestCase):
             model.assert_not_called()
         self.assertNotIn("escalation", monitor)
         self.assertEqual(self.commercial.list_leads(), [])
+
+    def test_exact_hdd_card_survives_capacity_paraphrase_without_sku_in_answer(self):
+        request = SimpleNamespace(cookies={})
+        message = "Сначала выполни поиск по каталогу, нужен артикул 256294."
+        for size, expected in (("2 ТБ", ["256294"]), ("4 ТБ", [])):
+            with self.subTest(size=size), patch("app.main.reply", return_value={
+                "answer": f"Найден внешний HDD ADATA DashDrive на {size}. Характеристики: USB 3.0.",
+                "provider": "yandex", "actions": [{"type": "route_n8n", "status": "done"}],
+            }):
+                data = self.chat(Chat(message=message), request)
+            self.assertEqual([item["sku"] for item in data["products"]], expected)
+            self.assertEqual(data["provider"], "yandex")
 
     def test_model_cards_are_verified_and_follow_answer_order(self):
         model = {"answer": "Подойдёт external-ssd1, ещё есть drive1.", "provider": "yandex",
