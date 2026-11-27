@@ -25,6 +25,7 @@ from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
 from app.documents import package_documents, render_pdf
 from app.knowledge import Knowledge
+from app.license_advice import NO_MATCH, license_answer
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 Contact = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)]
@@ -47,6 +48,7 @@ OPERATOR_REQUEST = re.compile(
     re.IGNORECASE,
 )
 UNRESOLVED_CATALOG = (
+    NO_MATCH,
     "В каталоге не нашлось товаров",
     "Не нашлось ноутбука",
     "Подтверждённого предложения",
@@ -275,6 +277,9 @@ def create_app(db_path=None):
                 sources = [{"title": confirmed["title"], "url": confirmed["url"]}]
         elif guidance:
             answer, sources = guidance
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif (license_result := license_answer(body.message, [turn.question for turn in body.history], catalog)):
+            answer, products, searched = license_result
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif scope:
             candidates = catalog.search(body.message, 5, scope=scope)

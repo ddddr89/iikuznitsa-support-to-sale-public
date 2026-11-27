@@ -150,6 +150,20 @@ class Catalog:
             )
             return [dict(row) for row in rows]
 
+    def search_by_name(self, phrase):
+        """Возвращает кандидатов с точной фразой в названии из индекса фида."""
+        tokens = re.findall(r"[^\W_]+", phrase)
+        if not tokens:
+            return []
+        query = 'name:"' + " ".join(tokens) + '"'
+        with self._connect() as connection:
+            return [dict(row) for row in connection.execute("""
+                SELECT p.* FROM catalog_search
+                JOIN catalog_products AS p ON p.rowid = catalog_search.rowid
+                WHERE catalog_search MATCH ?
+                ORDER BY p.price_minor IS NULL, p.price_minor, p.sku
+            """, (query,))]
+
     def _vendor_matches(self, connection, code, limit, offset):
         if not connection.execute(
             "SELECT 1 FROM catalog_vendor_codes WHERE code = ? LIMIT 1", (code,),

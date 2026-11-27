@@ -42,6 +42,14 @@ class CatalogMatchingTests(TestCase):
             ("poe", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports, PoE+"),
             ("poe-unknown", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports"),
             ("gpu-wrong", "Видеокарта RTX 3050", "Видеокарты", ""),
+            ("license-standard", "MDaemon Standard, новая лицензия на 1 год, 10 пользователей",
+             "Почтовые клиенты", ""),
+            ("license-renewal", "MDaemon Standard, продление на 1 год, 10 пользователей",
+             "Почтовые клиенты", ""),
+            ("license-pro", "MDaemon Pro, новая лицензия на 1 год, 10 пользователей",
+             "Почтовые клиенты", ""),
+            ("license-generic", "ExampleBackup, новая лицензия на 1 год, 10 пользователей",
+             "Программы", ""),
             ("256294", "Внешний HDD ADATA DashDrive 2TB", "Внешние HDD", "HDD, USB"),
         ]
         rows = ((sku, dict(sku=sku, name=name, category=category, description=description,
@@ -140,6 +148,58 @@ class CatalogMatchingTests(TestCase):
         result = self.chat(Chat(message=query), SimpleNamespace(cookies={}))
         self.assertEqual([p["sku"] for p in result["products"]], ["standard"])
         self.assertIn("15 пользовательских лицензий", result["answer"])
+
+    def test_named_license_collects_parameters_before_showing_matching_card(self):
+        request = SimpleNamespace(cookies={})
+        history = []
+        with patch("app.main.reply") as model:
+            for message, missing in (
+                ("Нужен MDaemon Standard", "на сколько пользователей"),
+                ("Для 10 пользователей", "это новая лицензия или продление"),
+                ("Новая лицензия", "на какой срок"),
+            ):
+                actual = self.chat(Chat(message=message, history=history), request)
+                self.assertIn(missing, actual["answer"])
+                self.assertEqual(actual["products"], [])
+                history.append(Turn(question=message, answer=actual["answer"]))
+            actual = self.chat(Chat(message="На 1 год", history=history), request)
+            model.assert_not_called()
+        self.assertEqual([p["sku"] for p in actual["products"]], ["license-standard"])
+        self.assertEqual(self.commercial.list_leads(), [])
+
+    def test_ambiguous_edition_never_picks_other_license(self):
+        request = SimpleNamespace(cookies={})
+        for versions in ("MDaemon", "MDaemon Standard или Pro"):
+            message = f"{versions}, новая лицензия на год для 10 пользователей"
+            actual = self.chat(Chat(message=message), request)
+            self.assertIn("какая редакция", actual["answer"])
+            self.assertEqual(actual["products"], [])
+        actual = self.chat(Chat(message="MDaemon Standard, продление на год для 99 пользователей"), request)
+        self.assertIn("Менеджер проверит", actual["answer"])
+        self.assertEqual(actual["products"], [])
+
+    def test_a_named_license_outside_known_families_uses_same_rules(self):
+        request = SimpleNamespace(cookies={})
+        with patch("app.main.reply") as model:
+            actual = self.chat(Chat(message="Нужна лицензия ExampleBackup для 10 пользователей"), request)
+            self.assertEqual(actual["products"], [])
+            self.assertIn("новая лицензия или продление", actual["answer"])
+            actual = self.chat(Chat(message="Нужна лицензия ExampleBackup для 10 пользователей, новая лицензия на год"), request)
+            model.assert_not_called()
+        self.assertEqual([p["sku"] for p in actual["products"]], ["license-generic"])
+
+    def test_license_retains_a_standalone_edition_and_resets_for_other_products(self):
+        request = SimpleNamespace(cookies={})
+        history = [
+            Turn(question="Нужен CommuniGate Pro", answer="Уточните редакцию"),
+            Turn(question="Enterprise", answer="Уточните оставшиеся параметры"),
+        ]
+        actual = self.chat(Chat(message="Продление на год для 25 пользователей", history=history), request)
+        self.assertIn("Менеджер проверит", actual["answer"])
+        self.assertEqual(actual["products"], [])
+        next_product = self.chat(Chat(message="Нужен MDaemon Standard", history=history), request)
+        self.assertIn("новая лицензия или продление", next_product["answer"])
+        self.assertEqual(next_product["products"], [])
 
     def test_comparison_rejects_candidates_above_budget(self):
         query = "Сравните два внешних SSD на 1 ТБ стоимостью до 2 ₽"
