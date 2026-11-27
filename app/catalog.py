@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from urllib.parse import urlsplit
 
-from app.catalog_matching import CATEGORIES, product_scope
+from app.catalog_matching import CATEGORIES, normalize_codes, product_scope
 
 FIELDS = ("sku", "name", "category", "description", "url", "price_minor", "currency")
 MAX_PRICE_MINOR = (2**53 - 1) // (50 * 999)
@@ -70,8 +70,9 @@ class Catalog:
         with self._connect() as connection:
             connection.executescript(SCHEMA)
 
-    def search(self, q: str, limit: int = 20, offset: int = 0) -> list[dict]:
-        q = q.strip()
+    def search(self, q: str, limit: int = 20, offset: int = 0, *, scope=None) -> list[dict]:
+        raw_query = q.strip()
+        q = normalize_codes(raw_query)
         with self._connect() as connection:
             connection.execute("BEGIN")
             if not q:
@@ -84,7 +85,7 @@ class Catalog:
             exact = connection.execute(
                 """SELECT * FROM catalog_products WHERE sku = ? COLLATE NOCASE
                    ORDER BY (sku = ?) DESC LIMIT 1""",
-                (q, q),
+                (raw_query, raw_query),
             ).fetchone()
             if exact is not None:
                 return [] if offset else [dict(exact)]
@@ -93,7 +94,7 @@ class Catalog:
             if aliases is not None:
                 return aliases
 
-            scope = product_scope(q)
+            scope = scope or product_scope(q)
             if scope:
                 categories = CATEGORIES[scope.category]
                 placeholders = ", ".join("?" for _ in categories)

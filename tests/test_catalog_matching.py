@@ -5,6 +5,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app.catalog import Catalog
+from app.catalog_matching import product_scope
 from app.commercial import Commercial
 from app.knowledge import Knowledge
 from app.main import Chat, Turn, create_app
@@ -27,6 +28,19 @@ class CatalogMatchingTests(TestCase):
             ("screen-game", 'Игровой монитор 27"', "Мониторы", "144 Гц"),
             ("license", 'Лицензия для моноблока 24"', "Лицензии", "игровой монитор, 144 Гц"),
             ("mousepad", "Коврик игровой", "Коврики", 'монитор 24"'),
+            ("t9", "Внутренний SSD Samsung Portable T9 1 ТБ", "Внутренние твердотельные накопители (SSD)", "SSD • USB 3.2 • 1 ТБ"),
+            ("nvme", "SSD Internal NVMe M.2 PCIe 4.0 1 ТБ", "Внутренние твердотельные накопители (SSD)", "SSD • NVMe • 1 ТБ"),
+            ("sata", "SSD SATA M.2 1 ТБ", "Внутренние твердотельные накопители (SSD)", "SSD • SATA • 1 ТБ"),
+            ("fhd", 'Монитор 27"', "Мониторы", '27" IPS 1920 × 1080, USB-C 65 Вт'),
+            ("uhd", 'Монитор 27"', "Мониторы", '27" IPS 3840 × 2160, USB-C 65 Вт'),
+            ("unknown-watts", 'Монитор 27"', "Мониторы", '27" IPS 3840 × 2160, USB-C'),
+            ("dell", 'Монитор Dell U2424H 23.8-inch', "Мониторы", '23.8"'),
+            ("dell-similar", 'Монитор Dell U2424HE 23.8-inch', "Мониторы", '23.8"'),
+            ("basic", "Microsoft 365 Бизнес базовый (на 1 рабочее место)", "Офисные пакеты программ Microsoft Office", ""),
+            ("standard", "Microsoft 365 бизнес стандарт (лицензия 1 год), цена за 1 лицензию", "Офисные пакеты программ Microsoft Office", "Подписка"),
+            ("poe", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports, PoE+"),
+            ("poe-unknown", "Коммутатор Demo", "Коммутаторы", "Managed, 24 × Gigabit ports"),
+            ("gpu-wrong", "Видеокарта RTX 3050", "Видеокарты", ""),
         ]
         rows = ((sku, dict(sku=sku, name=name, category=category, description=description,
                            url="", price_minor=str(index * 100), currency="RUB"))
@@ -85,3 +99,75 @@ class CatalogMatchingTests(TestCase):
             result = self.chat(Chat(message="Что посоветуете?"), SimpleNamespace(cookies={}))
         self.assertEqual([p["sku"] for p in result["products"]], ["external-ssd1", "drive1"])
         self.assertEqual(result["products"][1], self.catalog.get("drive1"))
+
+    def test_joint_nvme_filter_checks_category_interface_and_budget(self):
+        query = "Нужен внутренний SSD NVMe M.2 на 1 ТБ, PCIe 4.0, до {} ₽"
+        self.assertEqual(self.skus(query.format(100)), ["nvme"])
+        self.assertEqual(self.skus(query.format(10)), [])
+
+    def test_joint_monitor_filter_rejects_fhd_and_unknown_power(self):
+        query = "Монитор 27 дюймов, 4K, IPS, USB-C с зарядкой ноутбука от 65 Вт"
+        self.assertEqual(self.skus(query), ["uhd"])
+
+    def test_exact_monitor_identifier_and_confusable_confirmation(self):
+        request = SimpleNamespace(cookies={})
+        self.assertEqual(self.skus("Нужен монитор Dell U2424Н, три штуки"), ["dell"])
+        first = self.chat(Chat(message="Нужен монитор Dell U2424Н, три штуки"), request)
+        self.assertEqual(first["products"], [])
+        self.assertIn("Подтвердите модель", first["answer"])
+        second = self.chat(Chat(message="Да, имел в виду Dell U2424H, три штуки", history=[
+            Turn(question="Нужен монитор Dell U2424Н, три штуки", answer=first["answer"]),
+        ]), request)
+        self.assertEqual(second["products"][0]["sku"], "dell")
+        self.assertIn("Наличие нужного количества", second["answer"])
+
+    def test_office_desktop_and_per_user_term_select_standard(self):
+        query = "Microsoft 365 для 15 сотрудников на год. Нужны настольные Outlook и Word"
+        result = self.chat(Chat(message=query), SimpleNamespace(cookies={}))
+        self.assertEqual([p["sku"] for p in result["products"]], ["standard"])
+        self.assertIn("15 пользовательских лицензий", result["answer"])
+
+    def test_comparison_rejects_candidates_above_budget(self):
+        query = "Сравните два внешних SSD на 1 ТБ стоимостью до 2 ₽"
+        result = self.chat(Chat(message=query), SimpleNamespace(cookies={}))
+        self.assertEqual(result["products"], [])
+        self.assertIn("два разных товара", result["answer"])
+
+    def test_laptop_component_does_not_change_product_type(self):
+        query = "Ноутбук с 32 ГБ RAM, SSD 1 ТБ и RTX 4070 за 25 000 ₽"
+        self.assertEqual(product_scope(query).category, "laptop")
+        self.assertEqual(self.skus(query), [])
+
+    def test_switch_and_gpu_exclude_wrong_candidates(self):
+        self.assertEqual(self.skus("Управляемый коммутатор на 24 гигабитных порта с PoE+"), ["poe"])
+        self.assertEqual(self.skus("Видеокарта RTX 5090 до 20 000 ₽"), [])
+
+    def test_windows_server_waits_for_requirements_instead_of_wrong_license(self):
+        req = SimpleNamespace(cookies={})
+        first = self.chat(Chat(message="Какую лицензию Windows Server выбрать для 20 сотрудников?"), req)
+        self.assertEqual(first["products"], [])
+        self.assertIn("число физических процессоров", first["answer"])
+        second = self.chat(Chat(message="Windows Server 2025, 16 ядер, две виртуальные машины", history=[
+            Turn(question="Какую лицензию Windows Server выбрать для 20 сотрудников?", answer=first["answer"]),
+        ]), req)
+        self.assertEqual(second["products"], [])
+        self.assertIn("2025 Standard", second["answer"])
+        self.assertIn("User CAL", second["answer"])
+
+    def test_endpoint_protection_does_not_return_automation_or_server_license(self):
+        req = SimpleNamespace(cookies={})
+        question = "Нужно защитить 50 ноутбуков Windows 11 от вирусов. Что выбрать?"
+        with patch("app.main.reply") as model:
+            first = self.chat(Chat(message=question), req)
+            second = self.chat(Chat(message="Windows 11 Pro, нужно централизованное управление",
+                                    history=[Turn(question=question, answer=first["answer"])]), req)
+            model.assert_not_called()
+        self.assertEqual(first["products"], [])
+        self.assertEqual(second["products"], [])
+        self.assertIn("Менеджер может проверить", second["answer"])
+
+    def test_ddr4_ddr5_compatibility_returns_no_unverified_modules(self):
+        result = self.chat(Chat(message="Нужна оперативная память DDR5 для платы, которая поддерживает только DDR4"),
+                           SimpleNamespace(cookies={}))
+        self.assertEqual(result["products"], [])
+        self.assertIn("несовместимы", result["answer"])
