@@ -18,7 +18,7 @@ DIRECTION = re.compile(r"\b(?:более\s+дешев\w*|подешевле|де
 SELECTION = re.compile(r"\b(?:возьм\w*|выбира\w*|беру|останов\w*|подойдет)\b")
 STOP = re.compile(r"\b(?:на этом все|пока не оформля\w*|не оформля\w*|не предлагайте замену)\b")
 NEW_BUDGET = re.compile(r"\b(?:предел|бюджет|лимит)\w*\s+до\s+(\d+)\s*(тысяч\w*|тыс\.?|руб\w*|₽)?")
-SPEC_CHECK = re.compile(r"\b(?:что именно|чем подтверж\w*|подтверждает|точно ли|остальное обязател\w*)\b")
+SPEC_CHECK = re.compile(r"\b(?:что именно|чем подтверж\w*|подтверждает|подтвердить\s+(?:интерфейс|разъем|разрешение|совместимость)|точно ли|остальное обязател\w*)\b")
 DDR = re.compile(r"\bddr[345]\b")
 MEMORY_CONTEXT = re.compile(r"\b(?:памят\w*|планк\w*|плат\w*|ноутбуков\w*|настольн\w*|dimm)\b")
 
@@ -86,7 +86,7 @@ def memory_followup(message, queries):
     if not MEMORY_CONTEXT.search(text):
         return None
     joined = normalize_codes(" ".join([*queries, message]))
-    supported = re.search(r"\b(?:только|лишь)\s+(ddr[45])\b", joined)
+    supported = re.search(r"\b(?:только|лишь)\s+(?:с\s+)?(ddr[45])\b", joined)
     if not supported or len(set(DDR.findall(joined))) < 2 or DDR.search(text):
         return None
     generation = supported[1].upper()

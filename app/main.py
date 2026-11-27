@@ -318,8 +318,24 @@ def create_app(db_path=None):
         delivery_handoff = None
         consultation_subject = None
         selection = None
-        delivery = purchase_with_delivery(body.message, catalog)
-        if operator_requested:
+        content_count, quantity = quantity_in(current)
+        wants_delivery_for_selection = (not service_only or state.route != "delivery" and (
+            content_count or re.search(r"\b(?:этот|этого|выбранн\w*|для него)\b", current)
+        ))
+        delivery = purchase_with_delivery(
+            body.message, catalog,
+            selected=chosen if wants_delivery_for_selection and not suppress_manager else None,
+            previous_quantity=state.quantity,
+        )
+        latest_price_question = PRICE.search(current) or re.search(r"\b(?:во сколько|сколько)\b", current)
+        if chosen and not new_route and content_count and quantity is not None and latest_price_question:
+            count = quantity
+        conditional_handoff = operator_requested and bool(re.search(r"\bесли\b", current))
+        license_result = (license_answer(body.message, [turn["question"] for turn in incoming_history], catalog)
+                          if not operator_requested or conditional_handoff else None)
+        if conditional_handoff and license_result and license_result[1]:
+            operator_requested = False
+        if operator_requested and not (conditional_handoff and license_result):
             result = {"answer": "Ответ менеджера появится в этом чате.", "provider": "catalog", "actions": []}
         elif cancel:
             result = {"answer": "Хорошо, остановимся. Если захотите возобновить подбор, напишите.",
@@ -349,7 +365,7 @@ def create_app(db_path=None):
             result = {"answer": answer, "provider": "catalog",
                       "actions": [{"type": "documents_prepared", "status": "done"}] if documents else []}
             if delivery and document.sku:
-                _, next_step, _, subject, sku = delivery
+                _, next_step, _, subject, sku, _ = delivery
                 result["answer"] += "\n\n" + next_step
                 delivery_handoff = (subject, sku)
                 sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
@@ -365,7 +381,7 @@ def create_app(db_path=None):
                       "actions": [{"type": reference["kind"], "status": "done"}]}
             if reference.get("url"):
                 sources = [{"title": reference["title"], "url": reference["url"]}]
-        elif chosen and (count is not None or choice or PRICE.search(current)) and not new_route:
+        elif chosen and (count is not None or choice or PRICE.search(current)) and not new_route and delivery is None:
             quantity = count if count is not None else state.quantity
             selection = {"sku": chosen["sku"], "quantity": quantity}
             price = chosen["price_minor"]
@@ -411,8 +427,10 @@ def create_app(db_path=None):
                       "provider": "catalog", "actions": [{"type": "delivery_details_added", "status": "done"}]}
         elif delivery is not None:
             state.route = "delivery"
-            opening, next_step, products, subject, sku = delivery
-            searched = True
+            opening, next_step, products, subject, sku, quantity = delivery
+            if sku:
+                selection = {"sku": sku, "quantity": quantity}
+            searched = bool(products or scope)
             delivery_handoff = (subject, sku)
             sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
             result = {"answer": f"{opening}\n\n{next_step}", "provider": "catalog", "actions": []}
@@ -445,7 +463,7 @@ def create_app(db_path=None):
         elif guidance:
             answer, sources = guidance
             result = {"answer": answer, "provider": "catalog", "actions": []}
-        elif (license_result := license_answer(body.message, [turn["question"] for turn in incoming_history], catalog)):
+        elif license_result:
             answer, products, searched = license_result
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif (comparison := compare_monitor_models(body.message, catalog) or (
@@ -547,7 +565,7 @@ def create_app(db_path=None):
                 subject = next((turn["question"] for turn in reversed(trusted_history)
                                 if not OPERATOR_REQUEST.search(turn["question"])), subject)
             lead = existing_lead or commercial.create_lead(
-                SYSTEM_CONTACT, subject, sku=lead_sku if not service_only else None, escalation=True, owner=owner,
+                SYSTEM_CONTACT, subject, sku=lead_sku if not service_only or delivery_handoff else None, escalation=True, owner=owner,
             )
             handoff_state.lead = lead["id"]
             if handoff_state is not state:

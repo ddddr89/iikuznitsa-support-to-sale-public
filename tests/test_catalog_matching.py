@@ -529,3 +529,72 @@ class CatalogMatchingTests(TestCase):
         self.assertEqual(ask("Позовите менеджера.")["escalation"]["id"], lead_id)
         self.assertEqual(len(self.commercial.client_leads(owner)), 1)
         self.assertIsNone(self.commercial.append_customer_detail("another-session", lead_id, "проверка"))
+
+
+    def test_memory_consultation_keeps_supported_generation_and_stops_asking_for_unknown_board(self):
+        from hashlib import sha256
+
+        from app.main import SESSION_COOKIE
+
+        token = "M" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        ask("У меня плата только с DDR5. Можно поставить DDR4?")
+        follow = ask("Нужны две планки по 16 ГБ. Модель платы не знаю.")
+        self.assertIn("Для этой платы нужна DDR5", follow["answer"])
+        self.assertEqual(follow["products"], [])
+        self.assertNotIn("escalation", follow)
+        desktop = ask("Нужна настольная память. Что проверить перед покупкой?")
+        self.assertIn("DDR5 DIMM", desktop["answer"])
+        self.assertNotEqual(follow["answer"], desktop["answer"])
+        self.assertNotIn("escalation", desktop)
+
+    def test_quantity_wording_budget_ceiling_and_follow_up_after_selection(self):
+        from hashlib import sha256
+
+        from app.main import SESSION_COOKIE
+
+        token = "Q" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        ask("Покажите Dell U2424H.")
+        answer = ask("Нужно четыре экземпляра. Во сколько они обойдутся вместе?")
+        self.assertIn("4 монитора", answer["answer"])
+        self.assertEqual(answer["products"], [])
+        quote = ask("Оформляйте КП и счёт на это количество.")["documents"]
+        self.assertEqual(self.commercial.get_quote(quote["id"], owner)["items"][0]["quantity"], 4)
+
+        too_low = ask("Нужен внутренний SSD 1 ТБ. Верхняя граница 1 рубль.")
+        self.assertEqual(too_low["products"], [])
+        confirmed = ask("Можете подтвердить интерфейс? SATA не подойдёт.")
+        self.assertEqual(confirmed["products"], [])
+        self.assertIn("Учёл бюджет", confirmed["answer"])
+
+    def test_delivery_uses_confirmed_sku_and_new_quantity_without_repeating_the_search(self):
+        from hashlib import sha256
+
+        from app.main import SESSION_COOKIE
+
+        token = "D" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        self.chat(Chat(message="Покажите Dell U2424H."), request)
+        answer = self.chat(Chat(message="Посчитайте две штуки и доставку в Воркуту."), request)
+        self.assertIn("За 2 шт.", answer["answer"])
+        self.assertEqual(answer["products"], [])
+        self.assertNotIn("catalog_search", [action["type"] for action in answer["actions"]])
+        lead = self.commercial.get_lead(answer["escalation"]["id"])
+        self.assertEqual(lead["sku"], "dell")
+        self.assertIn("Воркуту", lead["message"])

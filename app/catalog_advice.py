@@ -160,18 +160,23 @@ def document_confirmation(item, count):
     return f"Готово! КП и счёт на {amount} {name}."
 
 
-def purchase_with_delivery(message, catalog):
+def purchase_with_delivery(message, catalog, *, selected=None, previous_quantity=None):
     """Совмещает каталожный расчёт с передачей условий доставки на проверку."""
     current = normalize_codes(message)
     if not DELIVERY_REQUEST.search(current):
         return None
     scope = product_scope(message)
     reference = SKU_REFERENCE.search(current)
-    if not (scope or reference):
+    if scope or reference:
+        products = catalog.search(message, 5, scope=scope)
+        selected = products[0] if products and (reference or (scope and scope.model) or len(products) == 1) else None
+    elif selected is not None:
+        products = []
+    else:
         return None
-    products = catalog.search(message, 5, scope=scope)
-    selected = products[0] if products and (reference or (scope and scope.model) or len(products) == 1) else None
-    _, quantity = quantity_in(current)
+    quantity_seen, quantity = quantity_in(current)
+    if not quantity_seen and not products:
+        quantity = previous_quantity
     count = f"{quantity} шт." if quantity else "количество не указано"
     if not selected:
         opening = ("Выберите подходящую позицию из карточек." if products else
@@ -190,7 +195,7 @@ def purchase_with_delivery(message, catalog):
         "Укажите почтовый индекс или адрес, чтобы менеджер уточнил стоимость и дату доставки."
     )
     subject = f"Доставка: {selected['sku'] if selected else 'товар уточняется'}, {count}. {message}"
-    return opening, next_step, products, subject, selected["sku"] if selected else None
+    return opening, next_step, products, subject, selected["sku"] if selected else None, quantity
 
 
 def delivery_details_followup(message, trusted_history):
