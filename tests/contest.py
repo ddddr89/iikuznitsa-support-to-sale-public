@@ -174,7 +174,8 @@ class ContestTests(unittest.TestCase):
             self.assertEqual(forbidden.exception.code, 404)
             forbidden.exception.close()
         missing = chat("Подготовьте счёт, артикул DEMO-BACKUP-01, 2 штуки")
-        self.assertIn("escalation", missing)
+        self.assertNotIn("escalation", missing)
+        self.assertIn("escalation", chat("Да"))
         self.assertNotIn("documents", missing)
 
 

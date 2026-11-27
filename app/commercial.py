@@ -109,11 +109,12 @@ class Commercial:
                 SELECT leads.id, contact, message, sku, created_at, status,
                        {WAITING_FOR_REPLY} AS requires_reply
                 FROM leads LEFT JOIN lead_sessions ON leads.id = lead_sessions.lead_id
-                WHERE contact = ? AND message = ? AND sku IS ? AND lead_sessions.owner IS ?
+                WHERE (contact = ? OR (? AND lead_sessions.owner IS NOT NULL AND leads.requires_reply = 1))
+                  AND message = ? AND sku IS ? AND lead_sessions.owner IS ?
                 AND created_at >= ? AND (NOT ? OR status IN ('new', 'escalated', 'in_progress'))
                 ORDER BY created_at DESC LIMIT 1
             """.format(WAITING_FOR_REPLY=WAITING_FOR_REPLY),
-                (contact, message, sku, owner, (now - timedelta(minutes=10)).isoformat(), escalation)).fetchone()
+                (contact, escalation, message, sku, owner, (now - timedelta(minutes=10)).isoformat(), escalation)).fetchone()
             if previous:
                 lead = dict(previous)
                 lead["requires_reply"] = bool(lead["requires_reply"])

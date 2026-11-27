@@ -50,6 +50,10 @@ class CatalogMatchingTests(TestCase):
              "Почтовые клиенты", ""),
             ("license-generic", "ExampleBackup, новая лицензия на 1 год, 10 пользователей",
              "Программы", ""),
+            ("headset-usb", "Гарнитура для звонков USB", "Гарнитуры", "Подключение проводное, USB 2.0 Type-A"),
+            ("headset-charge-only", "Гарнитура Bluetooth USB", "Гарнитуры", "Беспроводное подключение, USB для зарядки"),
+            ("switch8", "Коммутатор на 8 портов", "Коммутаторы", "8 × Gigabit ports, без PoE"),
+            ("switch16", "Коммутатор на 16 портов", "Коммутаторы", "16 × Gigabit ports, без PoE"),
             ("256294", "Внешний HDD ADATA DashDrive 2TB", "Внешние HDD", "HDD, USB"),
         ]
         rows = ((sku, dict(sku=sku, name=name, category=category, description=description,
@@ -380,13 +384,15 @@ class CatalogMatchingTests(TestCase):
             self.assertIn(f"За 3 шт. — {price_text(total)} без доставки", result["answer"])
             self.assertIn("Укажите почтовый индекс или адрес", result["answer"])
             self.assertNotIn("Оплатить прямо в чате нельзя", result["answer"])
-            lead_id = result["escalation"]["id"]
+            self.assertNotIn("escalation", result)
+            self.assertEqual(self.commercial.list_leads(), [])
+            followup = self.chat(Chat(message="Индекс 629008"), request)
+            self.assertIn("Учёл данные доставки", followup["answer"])
+            lead_id = self.chat(Chat(message="Да"), request)["escalation"]["id"]
             lead = self.commercial.get_lead(lead_id)
             self.assertEqual(lead["sku"], "dell")
             self.assertIn("3 шт.", lead["message"])
             self.assertIn(question, lead["message"])
-            followup = self.chat(Chat(message="Индекс 629008"), request)
-            self.assertIn("Добавил данные в обращение", followup["answer"])
             self.assertEqual(len(self.commercial.list_leads()), 1)
             history = self.commercial.lead_detail(lead_id)["history"]
             self.assertTrue(any(row["content"] == "Индекс 629008" for row in history))
@@ -413,7 +419,8 @@ class CatalogMatchingTests(TestCase):
         self.assertNotIn("escalation", third)
         last = chat("Я не знаю")
         self.assertEqual(last["products"], [])
-        lead = self.commercial.get_lead(last["escalation"]["id"])
+        self.assertNotIn("escalation", last)
+        lead = self.commercial.get_lead(chat("Да")["escalation"]["id"])
         for fact in ("Ящики: 40", "Microsoft", "спам, фишинг, вредоносные вложения"):
             self.assertIn(fact, lead["message"])
         self.assertNotIn("escalation", chat("Я не знаю"))
@@ -523,9 +530,10 @@ class CatalogMatchingTests(TestCase):
             return self.chat(Chat(message=message), request)
 
         first = ask("Ищу два Dell U2424H с доставкой в Норильск.")
-        lead_id = first["escalation"]["id"]
+        self.assertNotIn("escalation", first)
         self.assertIn("За 2 шт.", first["answer"])
-        self.assertIn("Добавил данные", ask("Индекс 663300. Количество прежнее.")["answer"])
+        self.assertIn("Учёл данные доставки", ask("Индекс 663300. Количество прежнее.")["answer"])
+        lead_id = ask("Да")["escalation"]["id"]
         self.assertEqual(ask("Позовите менеджера.")["escalation"]["id"], lead_id)
         self.assertEqual(len(self.commercial.client_leads(owner)), 1)
         self.assertIsNone(self.commercial.append_customer_detail("another-session", lead_id, "проверка"))
@@ -598,6 +606,27 @@ class CatalogMatchingTests(TestCase):
         self.assertIn("За 2 шт.", answer["answer"])
         self.assertEqual(answer["products"], [])
         self.assertNotIn("catalog_search", [action["type"] for action in answer["actions"]])
-        lead = self.commercial.get_lead(answer["escalation"]["id"])
+        self.assertNotIn("escalation", answer)
+        lead = self.commercial.get_lead(self.chat(Chat(message="Позовите менеджера."), request)["escalation"]["id"])
         self.assertEqual(lead["sku"], "dell")
         self.assertIn("Воркуту", lead["message"])
+
+
+    def test_equipment_consultation_keeps_budget_and_checks_network_topology(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        token = "E" * 43
+        self.commercial.create_session(sha256(token.encode()).hexdigest(), 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        self.assertIn("2 500 ₽", ask("Гарнитуры для 12 сотрудников. Бюджет 30 000 ₽.")["answer"])
+        headset = ask("Нужен USB для звонков.")
+        self.assertEqual([p["sku"] for p in headset["products"]], ["headset-usb"])
+        self.assertNotIn("escalation", headset)
+        self.assertIn("9 портов", ask("Подберите коммутатор для восьми компьютеров.")["answer"])
+        network = ask("Добавьте роутер. Гигабит, без PoE.")
+        self.assertIn("7 свободных", network["answer"])
+        self.assertEqual([p["sku"] for p in network["products"]], ["switch16"])

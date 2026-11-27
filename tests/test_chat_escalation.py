@@ -12,7 +12,7 @@ from app.main import Chat, SESSION_COOKIE, create_app
 
 
 class ProviderOutageTests(TestCase):
-    def test_two_failed_routes_create_one_escalated_lead(self):
+    def test_two_failed_routes_offer_one_escalated_lead_after_consent(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "test.sqlite3"
             Catalog(path).init()
@@ -36,8 +36,10 @@ class ProviderOutageTests(TestCase):
                 anonymous = chat(body, SimpleNamespace(cookies={}))
                 self.assertNotIn("escalation", anonymous)
                 self.assertEqual(commercial.list_leads(), [])
-                for _ in range(2):
-                    result = chat(body, request)
+                self.assertNotIn("escalation", chat(body, request))
+                self.assertEqual(commercial.list_leads(), [])
+                for message in ("Да", "Позовите менеджера."):
+                    result = chat(Chat(message=message), request)
                     self.assertEqual(result["escalation"]["status"], "escalated")
                     self.assertEqual(result["escalation"]["id"], commercial.list_leads()[0]["id"])
                     self.assertIn({"type": "lead_escalation", "status": "done"}, result["actions"])

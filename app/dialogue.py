@@ -32,6 +32,7 @@ class Dialogue:
     quantity: int | None = None
     options: list[str] = field(default_factory=list)
     lead: str | None = None
+    handoff: dict | None = None
     pending: str | None = None
     service_leads: dict[str, str] = field(default_factory=dict)
     facts: dict = field(default_factory=dict)
@@ -63,6 +64,10 @@ def route_for(message):
     current = normalize_codes(message)
     if SERVICE_TOPIC.search(current) and not (product_scope(message) or SKU_REFERENCE.search(current)):
         return "service"
+    if re.search(r"\bгарнитур\w*\b|наушник\w*\s+с\s+микрофон", current):
+        return "headset"
+    if re.search(r"\bкоммутатор\w*\b", current) and re.search(r"\b(?:компьютер\w*|пк)\b", current):
+        return "network"
     if starts_mail(current):
         return "mail"
     if product_in(current):

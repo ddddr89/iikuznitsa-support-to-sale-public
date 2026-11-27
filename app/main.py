@@ -25,13 +25,14 @@ from app.ai import reply
 from app.automatic_documents import document_quantity_followup, document_request, quantity_in, recently_shown
 from app.catalog import Catalog
 from app.catalog_advice import (
-    DELIVERY, DELIVERY_REQUEST, DELIVERY_DETAILS, advisory, checked_model_answer, compare_monitor_models, delivery_details_followup, document_confirmation,
+    DELIVERY, DELIVERY_REQUEST, DELIVERY_DETAILS, advisory, comparison_details, checked_model_answer, compare_monitor_models, delivery_details_followup, document_confirmation,
     price_text, purchase_with_delivery, quantity_label, scoped_answer,
 )
 from app.catalog_matching import MODEL_DETAIL, normalize_codes, product_scope
 from app.commercial import Commercial
 from app.consultation import PURCHASE_CONTINUE, REJECTION, active_turns, mail_consultation
 from app.dialogue import Dialogue, DIRECTION, PRICE, SELECTION, STOP, corrected_quantity, memory_followup, route_for
+from app.equipment_advice import headset_advice, network_advice
 from app.documents import PDF_FILENAMES, package_documents, render_pdf
 from app.knowledge import Knowledge
 from app.license_advice import NO_MATCH, license_answer
@@ -277,7 +278,11 @@ def create_app(db_path=None):
         new_route = route_for(body.message)
         service_only = new_route == "service"
         cancel = bool(REJECTION.search(current) or STOP.search(current) and "на этом все" in current)
-        operator_requested = bool(OPERATOR_REQUEST.search(body.message))
+        explicit_operator = bool(OPERATOR_REQUEST.search(body.message))
+        consent = bool(state.handoff and re.fullmatch(
+            r"(?:да|согласен|согласна|давайте|хорошо|передайте|да,? передайте)[.! ]*", current
+        ))
+        operator_requested = explicit_operator or consent
         continued_query = state.search_query(body.message) if not cancel and not service_only else None
         requested_documents = "Подготовьте счёт" if PURCHASE_CONTINUE.fullmatch(current) else body.message
         # Оформление сначала разрешает ссылку на текущий выбор. Новая товарная
@@ -293,6 +298,7 @@ def create_app(db_path=None):
         context = f"{earlier}\n{body.message}"
         guidance = advisory(body.message, context)
         resources = knowledge.search(body.message)
+        verified_reference = knowledge.automatic_answer(body.message) or knowledge.official_candidate(body.message)
         confirmed = resources[0] if resources and resources[0].get("kind") == "manager_confirmed" else None
         chosen = catalog.get(state.sku) if state.sku else None
         count = corrected_quantity(current) if chosen and not new_route else None
@@ -306,6 +312,9 @@ def create_app(db_path=None):
                 _, count = quantity_in(current)
         if cancel:
             state = Dialogue()
+        elif state.handoff and re.fullmatch(r"нет[. !]*", current):
+            state.handoff = None
+            cancel = True
         extra_detail = None
         suppress_manager = bool(STOP.search(current))
         if suppress_manager:
@@ -370,6 +379,16 @@ def create_app(db_path=None):
                 result["answer"] += "\n\n" + next_step
                 delivery_handoff = (subject, sku)
                 sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
+        elif not verified_reference and (re.search(r"\b(?:статус|состояние|стадия|отследить)\b.{0,75}\bзаказ\w*\b", current) or (
+            re.search(r"\bномер\s+заказа\b", current)
+            and re.search(r"\b(?:где|как|найти|посмотреть)\b", current)
+        )):
+            result = {"answer": "Номер заказа ищите в письме с подтверждением заказа. По ссылке из письма "
+                                "откройте личный кабинет Softline и посмотрите статус. "
+                                "Если письмо не нашлось, могу передать вопрос менеджеру.",
+                      "provider": "knowledge", "actions": []}
+            consultation_subject = body.message
+            sources = [{"title": "Проверка статуса заказа в Softline", "url": DELIVERY}]
         elif confirmed and confirmed["title"].casefold() == body.message.casefold():
             result = {"answer": confirmed["excerpt"], "provider": "knowledge", "actions": []}
             if confirmed.get("url"):
@@ -377,7 +396,7 @@ def create_app(db_path=None):
         elif owner and (learned := knowledge.learn_from_completion(body.message, trusted_history)):
             result = {"answer": "Хорошо, обращайтесь, если возникнут другие вопросы.", "provider": "catalog",
                       "actions": [{"type": "knowledge_learned", "status": "done"}]}
-        elif (reference := knowledge.automatic_answer(body.message) or knowledge.official_candidate(body.message)):
+        elif (reference := verified_reference):
             result = {"answer": reference["excerpt"], "provider": "knowledge",
                       "actions": [{"type": reference["kind"], "status": "done"}]}
             if reference.get("url"):
@@ -413,6 +432,10 @@ def create_app(db_path=None):
             if price is not None and count and count > 1:
                 answer += f" За {quantity_label(selected, count)} — {price_text(count * price)}."
             result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif state.route == "delivery" and state.handoff and DELIVERY_DETAILS.search(current):
+            state.handoff["subject"] = (state.handoff["subject"] + "\n" + body.message)[:2000]
+            result = {"answer": "Учёл данные доставки. Передать их менеджеру для расчёта стоимости и даты?",
+                      "provider": "catalog", "actions": []}
         elif owner and state.lead and state.route == "delivery" and DELIVERY_DETAILS.search(current):
             extra_detail = commercial.append_customer_detail(owner, state.lead, body.message)
             result = {"answer": "Добавил данные в обращение. Менеджер уточнит стоимость и дату доставки."
@@ -435,6 +458,11 @@ def create_app(db_path=None):
             delivery_handoff = (subject, sku)
             sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
             result = {"answer": f"{opening}\n\n{next_step}", "provider": "catalog", "actions": []}
+        elif state.route in {"headset", "network"} and not service_only:
+            give_advice = headset_advice if state.route == "headset" else network_advice
+            answer, products, sources = give_advice(state, body.message, catalog)
+            searched = bool(products)
+            result = {"answer": answer, "provider": "catalog", "actions": []}
         elif (consultation := mail_consultation(
             body.message, incoming_history,
             catalog, new_product=product_scope(body.message) is not None, state=None if service_only else state,
@@ -469,11 +497,17 @@ def create_app(db_path=None):
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif (comparison := compare_monitor_models(body.message, catalog) or (
             compare_monitor_models(state.query if state.route == "comparison" else earlier, catalog)
-            if re.search(r"\b(?:разница в цене|чем отличаются)\b", current) and not new_route else None
+            if re.search(r"\b(?:разница в цене|чем отличаются|зарядк\w*|проводн\w* сеть|одним кабелем)\b", current)
+            and not new_route else None
         )) is not None:
             answer, products = comparison
+            if state.route != "comparison":
+                state.query = body.message
             state.route = "comparison"
             state.options = [item["sku"] for item in products]
+            detail, sources = comparison_details(products)
+            if detail:
+                answer += "\n\n" + detail
             searched = True
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif scope:
@@ -521,7 +555,13 @@ def create_app(db_path=None):
             action["status"] == "error" and action["type"] in {"route_n8n", "model_yandex"}
             for action in result["actions"]
         )
-        answer = result["answer"]
+        fallback_clarification = "Подскажите модель или нужную конфигурацию."
+        if fallback_clarification in result["answer"]:
+            result["answer"] = result["answer"].replace(
+                fallback_clarification, "Расскажите, что нужно сделать и какие условия важны."
+            ).replace("Если нужна помощь, передам вопрос менеджеру.", "")
+        answer = result["answer"].rstrip()
+        result["answer"] = answer
         model_handoff = result["provider"] in {"yandex", "openai"} and bool(re.search(
             r"(?:не удалось (?:подтвердить|найти)|недостаточно (?:данных|информации)|"
             r"нет (?:информации|подходящ\w* (?:позици|решени|товар)\w*))", answer, re.IGNORECASE,
@@ -530,31 +570,35 @@ def create_app(db_path=None):
             not resolved_catalog_lookup and result["provider"] == "catalog"
             and any(text in answer for text in UNRESOLVED_CATALOG)
         )
-        if service_only and consultation_subject and not operator_requested:
-            # Справка не заменяет активную покупку. Обращение по справке
-            # привязывается к собственному вопросу, а не к предыдущему SKU.
-            service_key = "edo" if "эдо" in current else "other"
-            handoff_state = Dialogue(route="service", query=body.message, lead=state.service_leads.get(service_key))
-        else:
-            handoff_state = state
-        wants_escalation = (model_unavailable or needs_manager) and not suppress_manager
-        existing_lead = (commercial.append_customer_detail(owner, handoff_state.lead, body.message)
-                         if owner and wants_escalation and handoff_state.lead else extra_detail)
+        offered_subject, offered_sku = delivery_handoff or (
+            consultation_subject or (state.query if not service_only else body.message) or body.message,
+            document.sku if document_handoff else None if service_only else state.sku,
+        )
+        requested_handoff = state.handoff if operator_requested else None
+        if not operator_requested and not suppress_manager and (model_unavailable or needs_manager):
+            state.handoff = {"subject": offered_subject, "sku": offered_sku, "lead": None}
+            if not result["answer"].endswith("?") and "могу передать вопрос менеджеру" not in result["answer"].lower():
+                result["answer"] += "\n\nПередать вопрос менеджеру?"
+        wants_escalation = operator_requested and not suppress_manager
+        lead_hint = requested_handoff.get("lead") if requested_handoff else state.lead
+        existing_lead = (commercial.append_customer_detail(owner, lead_hint, body.message)
+                         if owner and wants_escalation and lead_hint else None)
         should_escalate = owner is not None and wants_escalation and (existing_lead or reserve_lead_slot(owner))
         if should_escalate:
             result["answer"] += "\n\nСтатус обращения: ожидает ответа менеджера."
         elif wants_escalation and owner is not None:
-            result["answer"] = answer if not operator_requested else "Передать обращение пока не удалось."
-            result["answer"] += "\n\nДостигнут лимит обращений. Повторите попытку через минуту."
+            result["answer"] = "Достигнут лимит обращений. Повторите попытку через минуту."
         elif operator_requested:
             result["answer"] = "Откройте форму «Позвать менеджера», чтобы отправить обращение."
-        elif model_unavailable:
-            result["answer"] += "\n\nОткройте клиентский чат, чтобы передать вопрос менеджеру."
         if selection is None and products and (len(products) == 1 or (
             scope and scope.model and all(scope.matches(item) for item in products)
         )):
             _, count = quantity_in(current)
-            selection = {"sku": products[0]["sku"], "quantity": count}
+            quantity = count or (state.quantity if state.sku == products[0]["sku"] or state.route == "headset" else None)
+            selection = {"sku": products[0]["sku"], "quantity": quantity}
+            price = products[0]["price_minor"]
+            if count and scope and not scope.model and price is not None:
+                result["answer"] += f"\nЗа {quantity_label(products[0], count)} — {price_text(price * count)}."
         if selection:
             state.sku, state.quantity = selection["sku"], selection["quantity"]
         if documents:
@@ -562,19 +606,16 @@ def create_app(db_path=None):
         if confirmed:
             actions.append({"type": "knowledge_confirmed", "status": "done"})
         if should_escalate:
-            subject = consultation_subject or state.query or body.message
-            lead_sku = document.sku if document_handoff else state.sku
-            if delivery_handoff:
-                subject, lead_sku = delivery_handoff
-            if operator_requested and not state.query:
-                subject = next((turn["question"] for turn in reversed(trusted_history)
-                                if not OPERATOR_REQUEST.search(turn["question"])), subject)
+            subject, lead_sku = offered_subject, offered_sku
+            if requested_handoff:
+                subject, lead_sku = requested_handoff["subject"], requested_handoff["sku"]
+            elif not state.query and trusted_history and not consultation_subject:
+                subject = trusted_history[-1]["question"]
             lead = existing_lead or commercial.create_lead(
-                SYSTEM_CONTACT, subject, sku=lead_sku if not service_only or delivery_handoff else None, escalation=True, owner=owner,
+                SYSTEM_CONTACT, subject, sku=lead_sku, escalation=True, owner=owner,
             )
-            handoff_state.lead = lead["id"]
-            if handoff_state is not state:
-                state.service_leads[service_key] = lead["id"]
+            state.lead = lead["id"]
+            state.handoff = None
             result["escalation"] = {"status": lead["status"], "id": lead["id"]}
             actions.append({"type": "lead_escalation", "status": "done"})
         if owner:
@@ -603,6 +644,14 @@ def create_app(db_path=None):
             raise HTTPException(404, "Товар не найден")
         if not reserve_lead_slot(owner):
             raise HTTPException(429, "Лимит обращений", {"Retry-After": "60"})
+        if owner and body.escalation:
+            state = Dialogue.load(commercial.chat_history(owner, include_context=True))
+            if state.handoff:
+                offer = state.handoff
+                result = commercial.create_lead(body.contact, offer["subject"], offer["sku"], True, owner)
+                if body.message != offer["subject"]:
+                    commercial.append_customer_detail(owner, result["id"], body.message)
+                return result
         return commercial.create_lead(body.contact, body.message, body.sku, body.escalation, owner)
 
     @api.get("/api/v1/client/leads")

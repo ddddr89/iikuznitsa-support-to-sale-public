@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 
 from app.automatic_documents import quantity_in
-from app.catalog_matching import MODEL, OFFICE_ANNUAL, SKU_REFERENCE, normalize, normalize_codes, product_scope, verified_models
+from app.catalog_matching import DELL_DISPLAY, MODEL, OFFICE_ANNUAL, SKU_REFERENCE, normalize, normalize_codes, product_scope, verified_models
 from app.knowledge import official_url
 
 MICROSOFT_365 = "https://www.microsoft.com/en-us/microsoft-365/business/no-teams-plans-and-pricing"
@@ -204,12 +204,37 @@ def delivery_details_followup(message, trusted_history):
                 and DELIVERY_DETAILS.search(normalize(message)))
 
 
+MONITOR_INTERFACES = {
+    "u2424h": ("USB-C к компьютеру передаёт только данные. Для изображения используйте HDMI или DisplayPort; "
+               "ноутбуку нужен отдельный источник питания. RJ45 нет.",
+               "https://www.dell.com/en-us/shop/monitors/apd/dell-ultrasharp-24-monitor-u2424h/u2424h_monitor/x99wp"),
+    "u2424he": ("USB-C передаёт видео и данные и заряжает ноутбук до 90 Вт. "
+                "RJ45 2,5 Гбит/с подключает проводную сеть. HDMI и DisplayPort тоже есть.",
+                "https://www.dell.com/en-us/shop/dell-ultrasharp-24-usb-c-hub-monitor-u2424he/apd/210-bkry/monitors-monitor-accessories"),
+}
+
+
+def comparison_details(items):
+    """Добавляет различия только для моделей с подтверждёнными спецификациями."""
+    models = [code for item in items for code in MODEL.findall(normalize_codes(item["name"]))
+              if code in MONITOR_INTERFACES]
+    if len(models) != len(items) or not models:
+        return "", []
+    lines = [f"{code.upper()} — {MONITOR_INTERFACES[code][0]}" for code in models]
+    if set(models) == MONITOR_INTERFACES.keys():
+        lines.append("Для одного кабеля, зарядки и проводной сети выбирайте U2424HE. "
+                     "Проверьте, что USB-C ноутбука поддерживает DisplayPort Alt Mode и зарядку USB-C. "
+                     "Если достаточно HDMI или DisplayPort и отдельной зарядки, подойдёт U2424H.")
+    links = [{"title": f"Спецификация Dell {code.upper()}", "url": MONITOR_INTERFACES[code][1]} for code in models]
+    return "\n\n".join(lines), links
+
+
 def compare_monitor_models(question, catalog):
     normalized = normalize_codes(question)
     if not re.search(r"\b(?:сравн\w*|отлича\w*|разниц\w*)\b", normalized):
         return None
     codes = list(dict.fromkeys(MODEL.findall(normalized)))
-    scope = product_scope(question)
+    scope = product_scope("монитор " + question) if DELL_DISPLAY.search(normalized) else product_scope(question)
     if len(codes) != 2 or not scope or scope.category != "monitor":
         return None
     items = []
