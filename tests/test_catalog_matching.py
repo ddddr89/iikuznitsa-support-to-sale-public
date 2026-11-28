@@ -739,3 +739,32 @@ class CatalogMatchingTests(TestCase):
         high = ask("Поднимем бюджет до 100 ₽.")
         self.assertIn("switch16", [item["sku"] for item in high["products"]])
         self.assertIn("Gigabit Ethernet", high["answer"])
+
+    def test_network_stops_clarifying_and_uses_accumulated_requirements(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        for direct in (True, False):
+            with self.subTest(direct=direct):
+                token = ("p" if direct else "n") * 43
+                owner = sha256(token.encode()).hexdigest()
+                self.commercial.create_session(owner, 3600)
+                request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+                def ask(message):
+                    return self.chat(Chat(message=message), request)
+
+                if not direct:
+                    ask("Помогите выбрать коммутатор.")
+                first = ask("Подключаем 10 компьютеров." if not direct else "Подбираю коммутатор для 10 компьютеров.")
+                self.assertIn("к роутеру?", first["answer"])
+                reply = "Да, будет подключение к роутеру. " if direct else ""
+                ask(reply + "В перспективе ещё 4. Нужны гигабитные порты, PoE не требуется. Бюджет до 15 000 ₽.")
+                for query in ("Предложите варианты.", "Какие варианты коммутаторов посоветуете?"):
+                    result = ask(query)
+                    self.assertIn("минимум 15 портов", result["answer"])
+                    self.assertIn("Gigabit Ethernet", result["answer"])
+                    skus = {product["sku"] for product in result["products"]}
+                    self.assertIn("switch16", skus)
+                    self.assertLessEqual(skus, {"switch16", "poe"})
+                    self.assertIn("catalog_search", [action["type"] for action in result["actions"]])

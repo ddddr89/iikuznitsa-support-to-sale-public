@@ -45,6 +45,15 @@ class Dialogue:
             return cls(**state)
         return cls()
 
+    def ask_once(self, field):
+        """Фиксирует уже заданное уточнение в пределах текущей задачи."""
+        asked = self.facts.setdefault("asked_fields", [])
+        if field in asked:
+            return False
+        asked.append(field)
+        self.last_question = field
+        return True
+
     def search_query(self, message):
         """Продолжение фильтруется по исходной задаче, а не по обрывку реплики."""
         if self.route != "search":

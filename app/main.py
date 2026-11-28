@@ -410,6 +410,8 @@ def create_app(db_path=None):
             not candidate_category or candidate_category == active_category or component_only
         ) and not model_codes(current) and not explicit_operator
         same_equipment_task = new_route in {"network", "headset", "license"} and state.route == new_route
+        if state.route == "network" and new_route in (None, "search") and current_category == "switch" and not model_codes(current):
+            same_equipment_task = True
         if new_route and not service_only and not continued_query and not document and not operator_requested and not same_equipment_task and not continue_qualification and state.route != "alternatives":
             state = Dialogue(route=new_route, query=body.message)
         if continued_query:
@@ -429,7 +431,7 @@ def create_app(db_path=None):
             prefix = "ноутбук " if component_only else ""
             qualification_query = f"{prefix}{body.message}\n{state.query}"
         elif (not service_only and not codes and category and not scope and CATEGORY_QUESTION.search(current)
-              and not quantity_for_selected_category):
+              and not quantity_for_selected_category and not same_equipment_task):
             if new_route not in {"network", "headset", "mail", "license", "memory"}:
                 state = Dialogue(route="qualification", query=body.message, facts={"category": category})
                 qualification_query = body.message

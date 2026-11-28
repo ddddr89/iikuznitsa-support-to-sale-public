@@ -12,7 +12,7 @@ COMPUTER = r"(?:компьютер\w*|пк|рабоч\w+\s+станци\w*)"
 COMPUTERS = re.compile(rf"\b({AMOUNT})\s+(?:(?:нов\w*|дополнительн\w*|будущ\w*|планируем\w*)\s+)*{COMPUTER}\b")
 EXPANSION = re.compile(rf"\b(?:еще|плюс|добав\w*|планируем\w*|в перспективе)\s+(?:[а-я]+\s+)?({AMOUNT})(?=\s|[.!?,]|$)")
 UPLINK = r"\b(?:роутер\w*|маршрутизатор\w*|uplink)\b"
-NO_POE = r"\b(?:без\s+(?:обязательн\w*\s+)?poe\b|poe\s+(?:не\s+нуж\w*|не\s+обязател\w*))"
+NO_POE = r"\b(?:без\s+(?:обязательн\w*\s+)?poe\b|poe\s+(?:не\s+(?:нуж\w*|обязател\w*|требу\w*)))"
 EXCLUDE_POE = r"\b(?:poe\s+исключ\w*|без\s+poe\b)"
 PERIPHERALS = (("принтеры", r"(?:сетев\w*\s+)?(?:принтер\w*|мфу)"),
                ("точки доступа", r"точк\w*\s+доступа"),
@@ -20,7 +20,9 @@ PERIPHERALS = (("принтеры", r"(?:сетев\w*\s+)?(?:принтер\w*|
                ("серверы", r"сервер\w*"))
 PORTS = re.compile(r"\b(\d{1,3})\s*[x×х]\s*(gigabit|fast ethernet|ethernet|1\s*гбит|10/100/1000|10/100)(?![\w/])")
 PORT_COUNT = re.compile(rf"\b({AMOUNT})\s+(?:гигабитн\w*\s+)?порт\w*\b")
-SWITCH_REQUIREMENT = re.compile(r"\b(?:порт\w*|гигабит\w*|poe|vlan|бюджет\w*|лимит\w*)\b")
+SWITCH_REQUIREMENT = re.compile(
+    rf"\b(?:порт\w*|гигабит\w*|poe|vlan|бюджет\w*|лимит\w*|{COMPUTER})\b|{UPLINK}"
+)
 PORT_PARAM = re.compile(r"число|количество|к-во")
 GIGABIT = re.compile(r"gigabit|гигабит|10/100/1000|\b1\s*гбит")
 UNKNOWN_SPEC = "в каталоге не указано"
@@ -141,15 +143,23 @@ def network_advice(state, message, catalog):
         state.facts["network_initialized"] = True
     topology = update_network_requirements(state, message)
     state.facts["network_searched"] = False
+    if state.last_question == "network_uplink":
+        reply = normalize(message).strip(" .!?")
+        if reply in {"да", "нет"}:
+            state.facts["uplink"] = reply == "да"
     uplink = state.facts.get("uplink")
     subtotal = sum(v for v in topology.values() if v)
     explicit_minimum = state.facts.get("port_min", 0)
     if not subtotal and not explicit_minimum:
-        return "Сколько компьютеров и других устройств нужно подключить кабелем?", [], []
-    if uplink is None and not explicit_minimum:
+        if state.ask_once("network_devices"):
+            return "Сколько компьютеров и других устройств нужно подключить кабелем?", [], []
+        return "Для выбора коммутатора нужен минимум портов. Можно указать число устройств или сразу нужное число портов.", [], []
+    if uplink is None and not explicit_minimum and state.ask_once("network_uplink"):
         return (f"С отдельным подключением к роутеру нужно минимум {subtotal + 1} портов. "
-                "Будет подключение к роутеру? Нужны гигабитные порты, PoE или отдельные сети VLAN?", [], [])
-    minimum = max(explicit_minimum, subtotal + int(bool(uplink)))
+                "Вы будете подключать коммутатор к роутеру?", [], [])
+    state.last_question = None
+    reserve_uplink = uplink is None and not explicit_minimum
+    minimum = max(explicit_minimum, subtotal + int(bool(uplink) or reserve_uplink))
     # Для 13–16 подключений рассматриваем стандартный размер в 16 портов.
     capacity = 16 if 12 < minimum < 16 else minimum
     state.facts["network_searched"] = True
@@ -191,6 +201,8 @@ def network_advice(state, message, catalog):
     topology_details = [f"{name}: {count}" for name, count in topology.items() if count]
     if uplink:
         topology_details.append("роутер: 1")
+    elif reserve_uplink:
+        topology_details.append("запас на роутер: 1")
     topology_note = " (" + "; ".join(topology_details) + ")" if topology_details else ""
     lines = [f"Нужно минимум {minimum} портов{topology_note}."]
     if capacity != minimum:
