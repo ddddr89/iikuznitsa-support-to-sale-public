@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 
 from app.automatic_documents import quantity_in
-from app.catalog_matching import DELL_DISPLAY, MODEL, OFFICE_ANNUAL, SKU_REFERENCE, normalize, normalize_codes, product_scope, verified_models
+from app.catalog_matching import DELL_DISPLAY, MODEL, OFFICE_ANNUAL, SKU_REFERENCE, catalog_parameters, normalize, normalize_codes, product_scope, verified_models
 from app.knowledge import official_url
 
 MICROSOFT_365 = "https://www.microsoft.com/en-us/microsoft-365/business/no-teams-plans-and-pricing"
@@ -215,20 +215,48 @@ MONITOR_INTERFACES = {
 
 
 def comparison_details(items, *, recommendation_only=False):
-    """Добавляет различия только для моделей с подтверждёнными спецификациями."""
-    models = [code for item in items for code in MODEL.findall(normalize_codes(item["name"]))
-              if code in MONITOR_INTERFACES]
-    if len(models) != len(items) or not models:
+    """Сравнивает одноимённые поля каталога, сохраняя различие между «нет» и пропуском."""
+    if len(items) != 2:
         return "", []
-    lines = [] if recommendation_only else [f"{code.upper()} — {MONITOR_INTERFACES[code][0]}" for code in models]
-    if set(models) == MONITOR_INTERFACES.keys():
-        lines.append("Для одного кабеля, зарядки и проводной сети выбирайте U2424HE. "
-                     "Через USB-C он даёт до 90 Вт и подключает сеть через RJ45. "
-                     "Проверьте, что ноутбук поддерживает видео и зарядку по USB-C.")
+    models = [next(iter(MODEL.findall(normalize_codes(item["name"]))), item["sku"]) for item in items]
+    known = set(models) == MONITOR_INTERFACES.keys()
+    parameters = [catalog_parameters(item) for item in items]
+    lines = []
+    if not recommendation_only and any(parameters):
+        groups = (
+            ("Экран", r"тип матрицы|разрешение экрана|диагональ"),
+            ("Подключение", r"интерфейс|разъем"),
+            ("Производительность", r"оперативная память|процессор|частота|объем установленного ssd|емкость накопителя"),
+            ("Сеть", r"стандарт\w* связи|возможности|vlan|уровень коммутатора|поe|poe"),
+            ("Эргономика", r"регулировк|поворот|vesa"),
+            ("Габариты", r"габарит|размеры|вес"),
+            ("Комплект", r"комплектаци|комплект поставки"),
+        )
+        common, differences = [], []
+        for label, expression in groups:
+            values = [list(dict.fromkeys(" ".join((value, unit)).strip()
+                                        for key, entries in params.items() if re.search(expression, normalize(key))
+                                        for value, unit in entries)) for params in parameters]
+            if not any(values):
+                continue
+            if set(values[0]) == set(values[1]):
+                common.append(f"{label}: {', '.join(values[0])}")
+            else:
+                pair = ["; ".join(value) if value else "не указано" for value in values]
+                differences.append(f"{label} | {pair[0]} | {pair[1]}")
+        if differences:
+            lines.extend(["Параметр | " + " | ".join(code.upper() for code in models), *differences])
+        if common:
+            lines.append("Общее: " + "; ".join(common) + ".")
+    if known:
         if not recommendation_only:
-            lines.append("Если достаточно HDMI или DisplayPort и отдельной зарядки, подойдёт U2424H.")
-    links = [{"title": f"Спецификация Dell {code.upper()}", "url": MONITOR_INTERFACES[code][1]} for code in models]
-    return "\n\n".join(lines), links
+            lines.append("По спецификациям Dell: USB-C у U2424H передаёт данные; видео идёт по HDMI или DisplayPort. "
+                         "У U2424HE USB-C передаёт видео и данные и заряжает ноутбук до 90 Вт.")
+        lines.append("Для одного кабеля, зарядки и проводной сети выбирайте U2424HE, если ноутбук поддерживает видео и зарядку по USB-C. "
+                     "Для обычного подключения по HDMI или DisplayPort достаточно U2424H.")
+        links = [{"title": f"Спецификация Dell {code.upper()}", "url": MONITOR_INTERFACES[code][1]} for code in models]
+        return "\n\n".join(lines), links
+    return "\n".join(lines), []
 
 
 def compare_monitor_models(question, catalog):
@@ -247,7 +275,7 @@ def compare_monitor_models(question, catalog):
         if found is None:
             return "Уточните артикулы обеих моделей, чтобы сравнить подтверждённые карточки.", []
         items.append(found)
-    lines = [item_text(item) if code in MONITOR_INTERFACES else
+    lines = [item_text(item) if code in MONITOR_INTERFACES or catalog_parameters(item) else
              "\n".join(part for part in (item_text(item), item["description"]) if part)
              for code, item in zip(codes, items)]
     a, b = items

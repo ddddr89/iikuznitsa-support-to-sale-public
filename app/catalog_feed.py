@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import gzip
 from hashlib import sha256
+import json
 import os
 from http.client import HTTPException
 from pathlib import Path
@@ -98,6 +99,17 @@ def fresh_feed_date(path, downloaded_at):
     return timestamp.astimezone(timezone.utc).isoformat()
 
 
+def field_data(node):
+    """Сохраняет текст, атрибуты и вложенные поля оригинального offer."""
+    value = {"text": "".join(node.itertext()).strip()}
+    if node.attrib:
+        value["attributes"] = dict(node.attrib)
+    if len(node):
+        value["children"] = {tag: [field_data(child) for child in node.findall(tag)]
+                             for tag in dict.fromkeys(child.tag for child in node)}
+    return value
+
+
 def rows(file):
     """Разбирает YML потоком, оставляя в памяти текущее предложение и справочник категорий."""
     parents = []
@@ -133,6 +145,20 @@ def rows(file):
                 )
             description_node = node.find("description")
             description = "".join(description_node.itertext()) if description_node is not None else ""
+            fields = {tag: [field_data(child) for child in node.findall(tag)]
+                      for tag in dict.fromkeys(child.tag for child in node)}
+            search_values = []
+            ignored = {"url", "picture", "price", "oldprice", "currencyId", "categoryId", "description", "name"}
+            for tag, values in fields.items():
+                if tag in ignored:
+                    continue
+                for value in values:
+                    attributes = value.get("attributes", {})
+                    if not value["text"] or value["text"].casefold() in {"другое или отсутствует", "не указано", "нет данных", "нет", "no", "false", "-"}:
+                        continue
+                    label = attributes.get("name", tag)
+                    unit = attributes.get("unit", "")
+                    search_values.append(" ".join(v for v in (label, value["text"], unit) if v))
             yield position, {
                 "sku": node.get("id", ""),
                 "vendor_code": node.findtext("vendorCode") or "",
@@ -142,6 +168,9 @@ def rows(file):
                 "url": node.findtext("url") or "",
                 "price_minor": minor,
                 "currency": "RUB",
+                "specifications": "\n".join(search_values),
+                "feed_fields": json.dumps({"offer": dict(node.attrib), "fields": fields}, ensure_ascii=False),
+
             }
             parents[-1].remove(node)
 

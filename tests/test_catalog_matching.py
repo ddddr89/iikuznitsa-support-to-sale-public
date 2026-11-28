@@ -124,7 +124,7 @@ class CatalogMatchingTests(TestCase):
         with patch("app.main.reply", return_value=model):
             result = self.chat(Chat(message="Что посоветуете?"), SimpleNamespace(cookies={}))
         self.assertEqual([p["sku"] for p in result["products"]], ["external-ssd1", "drive1"])
-        self.assertEqual(result["products"][1], self.catalog.get("drive1"))
+        self.assertEqual(result["products"][1], {key: self.catalog.get("drive1")[key] for key in result["products"][1]})
 
     def test_joint_nvme_filter_checks_category_interface_and_budget(self):
         query = "Нужен внутренний SSD NVMe M.2 на 1 ТБ, PCIe 4.0, до {} ₽"
@@ -630,3 +630,31 @@ class CatalogMatchingTests(TestCase):
         network = ask("Добавьте роутер. Гигабит, без PoE.")
         self.assertIn("7 свободных", network["answer"])
         self.assertEqual([p["sku"] for p in network["products"]], ["switch16"])
+
+    def test_greeting_qualifies_category_and_prose_quantity_update_keeps_sku(self):
+        from hashlib import sha256
+        from app.catalog_advice import price_text
+        from app.main import SESSION_COOKIE
+
+        token = "Q" * 43
+        self.commercial.create_session(sha256(token.encode()).hexdigest(), 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        with patch("app.main.reply") as provider:
+            first = ask("Здравствуйте. Есть у вас мониторы? Хотелось бы подобрать для работы.")
+            self.assertIn("бюджет", first["answer"])
+            self.assertIn("диагональ", first["answer"])
+            self.assertNotIn("для чего", first["answer"])
+            self.assertEqual(first["products"], [])
+            self.assertNotIn("escalation", first)
+            exact = ask("Добрый день. Хочу приобрести три монитора Dell U2424H для офиса.")
+            self.assertEqual([item["sku"] for item in exact["products"]], ["dell"])
+            revision = ask("Бухгалтерия уточнила, что сейчас нужны только два монитора. Пересчитайте, пожалуйста.")
+            self.assertIn(price_text(2 * exact["products"][0]["price_minor"]), revision["answer"])
+            self.assertEqual(revision["products"], [])
+            self.assertNotIn("catalog_search", [action["type"] for action in revision["actions"]])
+            self.assertNotIn("escalation", revision)
+            provider.assert_not_called()

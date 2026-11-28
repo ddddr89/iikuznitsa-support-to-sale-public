@@ -66,6 +66,18 @@ def quantity_in(text, *, standalone=False):
     return True, next(iter(numbers)) if len(numbers) == 1 else None
 
 
+def quantity_for_product(text, name):
+    """Учитывает число перед названием подтверждённого товара, даже без слова «штуки»."""
+    present, count = quantity_in(text)
+    if present:
+        return count
+    label = normalize_codes(name)
+    for match in re.finditer(rf"(?<![\w.,])({AMOUNT})\s+([a-z][a-z0-9-]+)\b", text):
+        if re.search(rf"\b{re.escape(match[2])}\b", label):
+            return number(match[1])
+    return None
+
+
 def catalog_item(catalog, reference):
     # SKU без вариантов регистра проверяется напрямую. Поиск нужен только
     # для регистра SKU, его ответ принимается исключительно при равенстве.
@@ -143,7 +155,7 @@ def document_request(message, trusted_history, catalog, *, selection=None, pendi
             if len(previous_references) == 1:
                 product = catalog_item(catalog, next(iter(previous_references)))
     if not quantity_seen:
-        quantity = previous_quantity
+        quantity = (quantity_for_product(text, product["name"]) if product else None) or previous_quantity
     sku = product["sku"] if product else None
     if SPECIAL_TERMS.search(text):
         return DocumentRequest(sku, quantity, "Эти условия нельзя подтвердить по каталогу. Их проверит менеджер.", product, True)
@@ -166,7 +178,7 @@ def document_quantity_followup(message, trusted_history, catalog):
         return None
     count = number(match[1])
     product, previous_count = recently_shown(catalog, trusted_history, None, set())
-    if previous_count is None and not QUANTITY.search(text) and not LABELLED_QUANTITY.search(text):
+    if previous_count is None and text.rstrip(".!?") == match[1]:
         return None
     if count is None or product is None:
         return None

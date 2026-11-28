@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS catalog_products (
     description TEXT NOT NULL,
     url TEXT NOT NULL,
     price_minor INTEGER CHECK (price_minor >= 0),
-    currency TEXT NOT NULL CHECK (currency = 'RUB')
+    currency TEXT NOT NULL CHECK (currency = 'RUB'),
+    specifications TEXT NOT NULL DEFAULT '',
+    feed_fields TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS catalog_sku_nocase ON catalog_products (sku COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS catalog_vendor_codes (
@@ -56,7 +58,7 @@ CREATE TABLE IF NOT EXISTS catalog_vendor_codes (
     PRIMARY KEY (code, sku)
 ) WITHOUT ROWID;
 CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search USING fts5(
-    sku, name, category, description, content='catalog_products',
+    sku, name, category, description, specifications, content='catalog_products',
     tokenize='unicode61'
 );
 """
@@ -89,7 +91,18 @@ class Catalog:
 
     def init(self) -> None:
         with self._connect() as connection:
-            connection.executescript(SCHEMA)
+            # При обновлении старой SQLite добавляем только колонки каталога.
+            connection.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(catalog_products)")}
+            if columns and "specifications" not in columns:
+                connection.execute("ALTER TABLE catalog_products ADD COLUMN specifications TEXT NOT NULL DEFAULT ''")
+                connection.execute("ALTER TABLE catalog_products ADD COLUMN feed_fields TEXT NOT NULL DEFAULT '{}'")
+                connection.execute("DROP TABLE IF EXISTS catalog_search")
+            for statement in SCHEMA.split(";"):
+                if statement.strip():
+                    connection.execute(statement)
+            if columns and "specifications" not in columns:
+                connection.execute("INSERT INTO catalog_search(catalog_search) VALUES ('rebuild')")
 
     def search(self, q: str, limit: int = 20, offset: int = 0, *, scope=None) -> list[dict]:
         """Ищет по артикулу и ограничениям в одном снимке SQLite, при необходимости использует FTS."""
@@ -104,24 +117,23 @@ class Catalog:
                 )
                 return [dict(row) for row in rows]
 
+            scope = scope or product_scope(q)
             exact = connection.execute(
                 """SELECT * FROM catalog_products WHERE sku = ? COLLATE NOCASE
                    ORDER BY (sku = ?) DESC LIMIT 1""",
                 (raw_query, raw_query),
             ).fetchone()
             if exact is not None:
-                return [] if offset else [dict(exact)]
+                return [] if offset or (scope and not scope.matches(dict(exact))) else [dict(exact)]
 
             aliases = self._vendor_matches(connection, q, limit, offset)
             if aliases is not None:
-                return aliases
-
-            scope = scope or product_scope(q)
+                return aliases if not scope else [item for item in aliases if scope.matches(item)]
             reference = SKU_REFERENCE.search(q)
             if reference:
                 row = connection.execute("SELECT * FROM catalog_products WHERE sku = ?",
                                          (reference[1],)).fetchone()
-                if row is None or offset or (scope and not scope.matches(row)):
+                if row is None or offset or (scope and not scope.matches(dict(row))):
                     return []
                 return [dict(row)]
             if scope:
@@ -133,7 +145,7 @@ class Catalog:
                         ORDER BY p.price_minor IS NULL, p.price_minor, p.sku""",
                     categories,
                 )
-                matches = (dict(row) for row in rows if scope.matches(row))
+                matches = (item for row in rows if scope.matches(item := dict(row)))
                 return list(islice(matches, offset, min(offset + limit, sys.maxsize)))
 
             tokens = list(dict.fromkeys(re.findall(r"[^\W_]+", q.lower())))[:32]
@@ -164,7 +176,7 @@ class Catalog:
                 FROM catalog_search
                 JOIN catalog_products AS products ON products.rowid = catalog_search.rowid
                 WHERE catalog_search MATCH ?
-                ORDER BY bm25(catalog_search, 12, 8, 4, 1), products.sku
+                ORDER BY bm25(catalog_search, 12, 8, 4, 1, 2), products.sku
                 LIMIT ? OFFSET ?
                 """,
                 (query, limit, offset),
@@ -254,8 +266,8 @@ class Catalog:
             for position, row in rows:
                 try:
                     connection.execute(
-                        "INSERT INTO catalog_products VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        _parse_row(row),
+                        "INSERT INTO catalog_products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (*_parse_row(row), row.get("specifications", ""), row.get("feed_fields", "{}")),
                     )
                     code = row.get("vendor_code", "").strip()
                     if code:

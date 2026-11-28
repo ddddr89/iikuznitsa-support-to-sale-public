@@ -79,7 +79,7 @@ def _cards(products):
             "sku": product["sku"][:200],
             "name": product["name"][:240],
             "category": product["category"][:160],
-            "description": product["description"][:500],
+            "description": (product["description"] + " " + product.get("specifications", "")).strip()[:500],
             "price_minor": product["price_minor"],
         }
         for product in products[:5]

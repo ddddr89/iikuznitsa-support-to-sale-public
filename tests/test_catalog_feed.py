@@ -109,3 +109,13 @@ class CatalogFeedTests(unittest.TestCase):
         with catalog_import_lock(self.catalog.db_path):
             with self.assertRaisesRegex(ValueError, "уже выполняется"), catalog_import_lock(self.catalog.db_path):
                 self.fail("Повторный импорт получил замок")
+
+    def test_product_parameters_are_retained_and_indexed(self):
+        tag = '<param name="Параметр" unit="Гц">120</param><param name="Интерфейсы">DisplayPort</param>'
+        self.path.write_bytes(YML.replace(b"<name>Bench monitor</name>", b"<name>Bench monitor</name>" + tag.encode()))
+        self.load(2)
+        item, = self.catalog.search("DisplayPort")
+        self.assertEqual(item["sku"], "101")
+        from app.catalog_matching import catalog_parameters
+        self.assertEqual(catalog_parameters(item)["Параметр"], [("120", "Гц")])
+        self.assertEqual(catalog_parameters(item)["Интерфейсы"], [("DisplayPort", "")])

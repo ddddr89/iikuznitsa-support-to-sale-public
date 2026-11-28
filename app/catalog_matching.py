@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from html import unescape
 import re
+import json
 
 NUMBER = r"\d+(?:[.,]\d+)?"
 CAPACITY = re.compile(rf"(?<![\w.,])({NUMBER})\s*(тб|tb|гб|gb)\b")
@@ -41,6 +42,9 @@ CATEGORIES = {
     "laptop": ("Ноутбуки",),
     "switch": ("Коммутаторы",),
     "headset": ("Наушники и микрофоны", "Гарнитуры"),
+    "printer": ("Принтеры", "Принтеры и МФУ"),
+    "projector": ("Проекторы",),
+    "peripheral": ("Клавиатуры, мыши, комплекты",),
     "gpu": ("Видеокарты",),
     "office": ("Офисные пакеты программ Microsoft Office",),
     "memory": ("Оперативная память",),
@@ -54,9 +58,19 @@ VERIFIED_MODELS = (
     ("tl-sg3428xmp", "управляемый 24 x gigabit poe+"),
 )
 REQUIREMENTS = {
+    "printer": (
+        (r"\bлазерн\w*", r"\bлазерн\w*"),
+        (r"\bструйн\w*", r"\bструйн\w*"),
+        (r"\bмфу\b", r"\bмфу\b"),
+        (r"\b(?:черно-бел\w*|монохром\w*)", r"\b(?:черно-бел\w*|монохром\w*)"),
+        (r"\bцветн\w*\b", r"\bцветн\w*\b"),
+        (r"\bwi[- ]?fi\b", r"\bwi[- ]?fi\b"),
+    ),
     "monitor": (
         (r"\b(?:4k|uhd|3840\s*[x×х]\s*2160)\b", r"\b(?:4k|uhd|3840\s*[x×х]\s*2160)\b"),
         (r"\bips\b", r"\bips\b"),
+        (r"\bhdmi\b", r"\bhdmi\b"),
+        (r"\bdisplayport\b", r"\bdisplayport\b"),
     ),
     "ssd": (
         (r"\bnvme\b", r"\bnvme\b"),
@@ -66,14 +80,18 @@ REQUIREMENTS = {
         (r"\bsata(?:\s*(?:iii|3))?\b", r"\bsata(?:\s*(?:iii|3))?\b"),
     ),
     "switch": (
-        (r"(?<!не)\bуправляем\w*\b", r"\b(?:управляем\w*|managed|layer\s*2\+?)\b"),
+        (r"\bуправляем\w*\b", r"\b(?:управляем\w*|managed|layer\s*2\+?)\b"),
         (r"\bpoe\+|802\.3at\b", r"\bpoe\+|802\.3at\b"),
         (r"\bгигабит|\b1\s*гбит", r"\bgigabit\b|\b1\s*гбит"),
     ),
 }
 OFFICE_ANNUAL = re.compile(r"\b(?:(?:на|сроком на)\s+(?:1\s+год|год|12\s+месяцев)|годов\w* подписк\w*)\b")
 USB_C = r"\b(?:usb[ -]?c|type[ -]?c)\b"
+LAPTOP_RAM = r"(?:оперативн\w*\s+памят\w*|озу|ram)"
 STARTS = (
+    ("printer", r"\b(?:принтер\w*|мфу)\b"),
+    ("projector", r"\bпроектор\w*\b"),
+    ("peripheral", r"\b(?:клавиатур\w*|мыш[ьи])\b"),
     ("monitor", r"\b(?:монитор\w*|monitors?)\b"),
     ("laptop", r"\b(?:ноутбук\w*|laptops?)\b"),
     ("switch", r"\b(?:коммутатор\w*|switch)\b"),
@@ -111,6 +129,23 @@ def verified_models(item):
             if re.search(rf"(?<![\w-]){re.escape(code)}(?![a-z0-9])", slug)]
 
 
+def catalog_parameters(item):
+    """Возвращает повторяющиеся параметры с исходными единицами измерения."""
+    params = json.loads(item.get("feed_fields") or "{}").get("fields", {}).get("param", [])
+    result = {}
+    for param in params:
+        attributes = param.get("attributes", {})
+        name = attributes.get("name", "").strip()
+        value = unescape(param["text"]).strip()
+        if name and value and normalize(value) not in {"другое или отсутствует", "не указано", "нет данных", "-"}:
+            result.setdefault(name, []).append((value, attributes.get("unit", "")))
+    return result
+
+
+def catalog_facts(item):
+    return normalize(" ".join(item.get(key, "") for key in ("name", "description", "specifications")))
+
+
 def budget_limit(text):
     match = BUDGET.search(text)
     if not match:
@@ -143,9 +178,13 @@ class ProductScope:
         identity = normalize_codes(name)
         if self.model and not re.search(rf"\b{re.escape(self.model)}\b", identity):
             return False
-        facts = name + " " + description
-        matched_models = verified_models(item)
-        facts += "".join(f" {extra}" for code, extra in VERIFIED_MODELS if code in matched_models)
+        catalog_specs = normalize(item.get("specifications", ""))
+        facts = " ".join((name, description, catalog_specs))
+        # Для прежних карточек сохраняем проверенные дополнения, только когда
+        # конкретный факт отсутствует в товарной записи.
+        if not catalog_specs:
+            matches = verified_models(item)
+            facts += "".join(f" {extra}" for code, extra in VERIFIED_MODELS if code in matches)
         if self.category == "office" and not re.match(r"^(?:microsoft|office)\s*365\b", name):
             return False
         if any(not re.search(pattern, facts) for pattern in self.requirements):
@@ -157,8 +196,11 @@ class ProductScope:
 
         if self.category == "monitor":
             diagonal = DIAGONAL.search(name) or DIAGONAL.search(description)
-            if self.diagonal and (not diagonal or diagonal[2]
-                                  or not self.diagonal[0] <= number(diagonal[1]) <= self.diagonal[1]):
+            structured_diagonal = re.search(rf"(?m)^диагональ(?: экрана)? ({NUMBER})(?=\s|$)", catalog_specs)
+            size = number(structured_diagonal[1]) if structured_diagonal else (
+                number(diagonal[1]) if diagonal and not diagonal[2] else None
+            )
+            if self.diagonal and (size is None or not self.diagonal[0] <= size <= self.diagonal[1]):
                 return False
             refresh = {int(hz) for hz in REFRESH.findall(facts)}
             return ((not self.refresh_hz or self.refresh_hz in refresh)
@@ -168,10 +210,12 @@ class ProductScope:
             return False
         if self.category in {"external", "ssd"}:
             # В заголовках внешних SSD встречается HDD, поэтому приоритет у поля типа накопителя.
-            media = DRIVE_TYPE.fullmatch(re.split(r"[,•]", description, 1)[0].strip()) or DRIVE_TYPE.search(name)
-            if self.drive_type and (not media or media[0] != self.drive_type):
+            typed = re.search(r"(?m)^тип (ssd|hdd)\b", catalog_specs)
+            media = (typed or DRIVE_TYPE.fullmatch(re.split(r"[,•]", description, 1)[0].strip())
+                     or DRIVE_TYPE.search(name))
+            if self.drive_type and (not media or media[1 if typed else 0] != self.drive_type):
                 return False
-            sizes = CAPACITY.findall(description) or CAPACITY.findall(name)
+            sizes = CAPACITY.findall(description) or CAPACITY.findall(catalog_specs) or CAPACITY.findall(name)
             if self.capacity_gb is not None and {capacity(*size) for size in sizes} != {self.capacity_gb}:
                 return False
         return True
@@ -228,9 +272,16 @@ def product_scope(query, previous=""):
             suffix = rf"\s*{gpu[2].strip()}\b" if gpu[2] else r"(?!\s*(?:ti|super)\b)"
             requirements.append(rf"\brtx\s*{gpu[1]}\b{suffix}")
     if category == "laptop":
-        for size, unit in CAPACITY.findall(text):
-            ram = r"\s*(?:ram|озу)\b" if unit in {"gb", "гб"} else ""
-            requirements.append(rf"\b{re.escape(size)}\s*{unit}\b{ram}")
+        for kind in (LAPTOP_RAM, r"ssd"):
+            amount = rf"({NUMBER})\s*(гб|gb|тб|tb)"
+            match = re.search(rf"\b{kind}\s*[:—-]?\s*{amount}\b|\b{amount}\s*{kind}\b", text)
+            if match:
+                size, unit = match.groups()[:2] if match[1] else match.groups()[2:]
+                units = r"(?:тб|tb)" if unit in {"тб", "tb"} else r"(?:гб|gb)"
+                quantity = rf"\b{re.escape(size)}\s*{units}\b"
+                label = r"(?:объем установленной озу|оперативная память|рам|ram)" if kind == LAPTOP_RAM else "ssd"
+                suffix = r"|\s*(?:l?p)?ddr[345]\b" if kind == LAPTOP_RAM else ""
+                requirements.append(rf"(?:{label}\s*{quantity}|{quantity}(?:\s*{label}\b{suffix}))")
     if category == "office":
         if not re.search(r"\b(?:standard|стандарт|outlook|word|excel|exchange)\b", text):
             return None

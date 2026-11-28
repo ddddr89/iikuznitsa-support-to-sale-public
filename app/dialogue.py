@@ -66,7 +66,7 @@ def route_for(message):
         return "service"
     if re.search(r"\bгарнитур\w*\b|наушник\w*\s+с\s+микрофон", current):
         return "headset"
-    if re.search(r"\bкоммутатор\w*\b", current) and re.search(r"\b(?:компьютер\w*|пк)\b", current):
+    if re.search(r"\b(?:коммутатор\w*|порт\w*)\b", current) and re.search(r"\b(?:компьютер\w*|пк|рабочие станции)\b", current):
         return "network"
     if starts_mail(current):
         return "mail"
@@ -80,6 +80,9 @@ def route_for(message):
 
 
 def corrected_quantity(text):
+    replacements = re.search(r"\bвместо\s+\w+.*?\b(?:возьмем|берем|нужно|нужны|хочу)\s+(\w+)\b", text)
+    if replacements:
+        return number(replacements[1])
     if CHANGE.search(text) and (match := CORRECTION.search(text)):
         return INFLECTED.get(match[1]) or number(match[1])
     return None
