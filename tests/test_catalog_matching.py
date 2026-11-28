@@ -711,3 +711,31 @@ class CatalogMatchingTests(TestCase):
         self.assertTrue(any(entry["content"] == question for entry in record["history"]))
         self.assertTrue(any("не помню" in entry["content"] for entry in record["history"]))
         self.assertEqual(len(self.commercial.client_leads(owner)), 1)
+
+    def test_switch_revisions_keep_gigabit_and_replace_budget_and_candidates(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        token = "W" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+
+        def ask(message):
+            return self.chat(Chat(message=message), request)
+
+        first = ask("Нужен гигабитный коммутатор на 8 портов до 80 ₽.")
+        self.assertIn("switch8", [item["sku"] for item in first["products"]])
+        second = ask("А если минимум 14 портов?")
+        self.assertNotIn("switch8", [item["sku"] for item in second["products"]])
+        self.assertIn("от 16 портов", second["answer"])
+        low = ask("Бюджет до 1 ₽.")
+        self.assertIn("Минимальная подтверждённая цена", low["answer"])
+        self.assertFalse(low["products"])
+        self.assertIn("catalog_search", [action["type"] for action in low["actions"]])
+        state = self.commercial.chat_history(owner, include_context=True)[-1]["dialogue"]
+        self.assertFalse(state["options"])
+        self.assertIsNone(state["sku"])
+        high = ask("Поднимем бюджет до 100 ₽.")
+        self.assertIn("switch16", [item["sku"] for item in high["products"]])
+        self.assertIn("Gigabit Ethernet", high["answer"])

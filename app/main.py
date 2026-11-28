@@ -34,7 +34,7 @@ from app.comparison import (ACCEPT_SELECTION, COMPARE_REQUEST, FOLLOWUP, PRICE_O
                             RECOMMEND_REQUEST, compare_products, recommend_offer)
 from app.consultation import PURCHASE_CONTINUE, REJECTION, active_turns, mail_consultation
 from app.dialogue import Dialogue, DIRECTION, PRICE, SELECTION, STOP, corrected_quantity, memory_followup, route_for
-from app.equipment_advice import headset_advice, network_advice
+from app.equipment_advice import PORT_COUNT, SWITCH_REQUIREMENT, headset_advice, network_advice
 from app.documents import PDF_FILENAMES, package_documents, render_pdf
 from app.knowledge import ORDER_STATUS, Knowledge, automatic_topic
 from app.product_advice import (CATEGORY_QUESTION, PURPOSE, alternative_scope, category_for, compare_named_products, comparison_codes, model_codes,
@@ -309,10 +309,29 @@ def create_app(db_path=None):
         current = normalize_codes(body.message).strip()
         state = Dialogue.load(trusted_history)
         new_route = route_for(body.message)
-        if state.route == "network" and new_route == "search" and re.search(
-            r"\b(?:еще|планиру\w*|порт\w*|подключ\w*)\b", current
-        ) and not re.search(r"\b(?:ищу|купить|подберите|нужен)\s+(?:сетевой\s+)?(?:принтер|мфу)\b", current):
-            new_route = None
+        port_request = PORT_COUNT.search(current)
+        current_category = category_for(current)
+        switch_context = state.route == "network" or category_for(state.query) == "switch"
+        if not switch_context and port_request and state.sku:
+            selected_switch = catalog.get(state.sku)
+            switch_context = bool(selected_switch and selected_switch["category"] in CATEGORIES["switch"])
+        switch_continuation = current_category in (None, "switch") or (
+            state.route == "network" and current_category == "printer"
+            and re.search(r"\b(?:еще|планиру\w*|подключ\w*)\b", current)
+            and not re.search(r"\b(?:ищу|купить|подберите|нужен)\s+(?:сетевой\s+)?(?:принтер|мфу)\b", current)
+        )
+        network_revision = switch_context and switch_continuation and new_route in (None, "search", "network") and (
+            port_request or budget_limit(current) is not None or SWITCH_REQUIREMENT.search(current)
+        ) and not model_codes(current) and not RECOMMEND_REQUEST.search(current)
+        new_network = port_request and current_category == "switch" and not model_codes(current)
+        if network_revision or new_network and not COMPARE_REQUEST.search(current):
+            if not network_revision:
+                state = Dialogue(route="network", query=body.message)
+            else:
+                state.route = "network"
+            state.sku, state.quantity, state.options, state.pending = None, None, [], None
+            state.facts.pop("qualified_options", None)
+            new_route = "network"
         service_only = new_route == "service"
         cancel = bool(REJECTION.search(current) or STOP.search(current) and "на этом все" in current)
         explicit_operator = bool(OPERATOR_REQUEST.search(body.message))
@@ -340,6 +359,8 @@ def create_app(db_path=None):
             state = Dialogue(route=new_route, query=body.message)
         if continued_query:
             state.query = continued_query[:2000]
+            state.sku, state.options, state.pending = None, [], None
+            state.facts.pop("qualified_options", None)
         scope = product_scope(continued_query or body.message)
         comparison_requested = not service_only and bool(COMPARE_REQUEST.search(current))
         codes = comparison_codes(body.message, catalog) if comparison_requested else model_codes(current)
@@ -598,7 +619,7 @@ def create_app(db_path=None):
         elif state.route in {"headset", "network"} and not service_only:
             give_advice = headset_advice if state.route == "headset" else network_advice
             answer, products, sources = give_advice(state, body.message, catalog)
-            searched = bool(products)
+            searched = bool(products) or state.route == "network" and state.facts.get("network_searched", False)
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif (consultation := mail_consultation(
             body.message, incoming_history,

@@ -19,6 +19,8 @@ PERIPHERALS = (("принтеры", r"(?:сетев\w*\s+)?(?:принтер\w*|
                ("камеры", r"(?:ip[- ]?)?камер\w*"),
                ("серверы", r"сервер\w*"))
 PORTS = re.compile(r"\b(\d{1,3})\s*[x×х]\s*(gigabit|fast ethernet|ethernet|1\s*гбит|10/100/1000|10/100)(?![\w/])")
+PORT_COUNT = re.compile(rf"\b({AMOUNT})\s+(?:гигабитн\w*\s+)?порт\w*\b")
+SWITCH_REQUIREMENT = re.compile(r"\b(?:порт\w*|гигабит\w*|poe|vlan|бюджет\w*|лимит\w*)\b")
 PORT_PARAM = re.compile(r"число|количество|к-во")
 GIGABIT = re.compile(r"gigabit|гигабит|10/100/1000|\b1\s*гбит")
 UNKNOWN_SPEC = "в каталоге не указано"
@@ -109,45 +111,73 @@ def headset_advice(state, message, catalog):
     return "\n".join(lines), choices, []
 
 
-def network_advice(state, message, catalog):
+def update_network_requirements(state, message):
     text = normalize(message)
     topology = update_topology(state, text)
-    if budget := budget_limit(text):
+    if (match := PORT_COUNT.search(text)) and (count := number(match[1])):
+        state.facts["port_min"] = count
+    if (budget := budget_limit(text)) is not None:
         state.facts["budget"] = int(budget)
     if re.search(r"гигабит|\b1\s*гбит", text):
         state.facts["gigabit"] = True
+    if re.search(r"\bуправляем\w*\b", text):
+        state.facts["managed"] = True
+    elif re.search(r"\bнеуправляем\w*\b", text):
+        state.facts["managed"] = False
     if re.search(EXCLUDE_POE, text):
         state.facts["poe"] = "excluded"
     elif re.search(NO_POE, text):
         state.facts.pop("poe", None)
     elif re.search(r"\bpoe\+?", text):
-        state.facts["poe"] = "required"
+        state.facts["poe"] = "plus" if "poe+" in text else "required"
     if re.search(r"\bvlan\b", text):
         state.facts["vlan"] = not bool(re.search(r"\b(?:без\s+vlan|vlan\s+не\s+нуж\w*)", text))
+    return topology
+
+
+def network_advice(state, message, catalog):
+    if not state.facts.get("network_initialized"):
+        update_network_requirements(state, state.query)
+        state.facts["network_initialized"] = True
+    topology = update_network_requirements(state, message)
+    state.facts["network_searched"] = False
     uplink = state.facts.get("uplink")
     subtotal = sum(v for v in topology.values() if v)
-    if not subtotal:
+    explicit_minimum = state.facts.get("port_min", 0)
+    if not subtotal and not explicit_minimum:
         return "Сколько компьютеров и других устройств нужно подключить кабелем?", [], []
-    if uplink is None:
+    if uplink is None and not explicit_minimum:
         return (f"С отдельным подключением к роутеру нужно минимум {subtotal + 1} портов. "
                 "Будет подключение к роутеру? Нужны гигабитные порты, PoE или отдельные сети VLAN?", [], [])
-    minimum = subtotal + int(uplink)
+    minimum = max(explicit_minimum, subtotal + int(bool(uplink)))
+    # Для 13–16 подключений рассматриваем стандартный размер в 16 портов.
+    capacity = 16 if 12 < minimum < 16 else minimum
+    state.facts["network_searched"] = True
     budget = state.facts.get("budget")
     # Сверяем каждый порт со скоростью, не выводим модель по цифрам в названии.
-    scope = ProductScope("switch", max_price=budget)
+    scope = ProductScope("switch")
     candidates = catalog.search("коммутатор", 10000, scope=scope)
     items, comparisons = [], []
+    feasible_ports = False
+    prices = []
     for item in candidates:
         total_ports, gigabit, params = switch_facts(item)
         usable = gigabit if state.facts.get("gigabit") else total_ports
-        if usable < minimum:
+        if usable < capacity:
             continue
+        feasible_ports = True
         facts = catalog_facts(item)
-        if (state.facts.get("poe") == "required" and not re.search(r"802\.3(?:af|at|bt)|\bpoe\s*\+", facts)
+        if (state.facts.get("poe") == "plus" and not re.search(r"802\.3at|\bpoe\s*\+", facts)
+                or state.facts.get("managed") is True and not re.search(r"\bуправляем\w*|\bmanaged\b|layer\s*2\+", facts)
+                or state.facts.get("managed") is False and not re.search(r"\bнеуправляем\w*|\bunmanaged\b", facts)
+                or state.facts.get("poe") == "required" and not re.search(r"802\.3(?:af|at|bt)|\bpoe\s*\+", facts)
                 or state.facts.get("poe") == "excluded" and not re.search(r"без\s+poe|non[- ]poe", facts)
                 or state.facts.get("vlan") and not re.search(r"802\.1q|vlan\s+(?:поддерживается|есть)", facts)):
             continue
-        if item["price_minor"] is None or any(other["name"] == item["name"] for other in items):
+        if item["price_minor"] is None:
+            continue
+        prices.append(item["price_minor"])
+        if budget is not None and item["price_minor"] > budget or any(other["name"] == item["name"] for other in items):
             continue
         items.append(item)
         details = [f"{usable} портов" + (" Gigabit Ethernet" if state.facts.get("gigabit") else ""),
@@ -161,9 +191,22 @@ def network_advice(state, message, catalog):
     topology_details = [f"{name}: {count}" for name, count in topology.items() if count]
     if uplink:
         topology_details.append("роутер: 1")
-    lines = [f"Нужно минимум {minimum} портов ({'; '.join(topology_details)})."]
+    topology_note = " (" + "; ".join(topology_details) + ")" if topology_details else ""
+    lines = [f"Нужно минимум {minimum} портов{topology_note}."]
+    if capacity != minimum:
+        lines.append(f"Рассматриваю модели от {capacity} портов.")
+    if budget is not None:
+        lines.append(f"Бюджет — до {price_text(budget)}.")
     if not items:
-        lines.append("В заданных условиях подходящего коммутатора не нашёл. Могу проверить варианты с другим бюджетом или передать запрос менеджеру.")
+        speed = " гигабитных" if state.facts.get("gigabit") else ""
+        if not feasible_ports:
+            lines.append(f"В каталоге не подтверждено {capacity} или больше{speed} портов у одной модели.")
+        elif prices and budget is not None:
+            lines.append(f"В этот бюджет подходящих моделей нет. Минимальная подтверждённая цена — {price_text(min(prices))}.")
+        elif state.facts.get("poe") or state.facts.get("vlan") or state.facts.get("managed") is not None:
+            lines.append("Не нашёл модель, у которой вместе с нужными портами подтверждены заданные условия по питанию или управлению сетью и цена.")
+        else:
+            lines.append("Для коммутаторов с нужными портами цена в каталоге не подтверждена.")
     else:
         lines.extend(comparisons)
         if len(items) > 1:

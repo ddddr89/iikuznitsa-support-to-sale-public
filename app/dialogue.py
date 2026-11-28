@@ -5,7 +5,7 @@ import re
 from uuid import uuid4
 
 from app.automatic_documents import number
-from app.catalog_matching import SKU_REFERENCE, budget_limit, normalize_codes, product_scope
+from app.catalog_matching import CAPACITY, DIAGONAL, REFRESH, SKU_REFERENCE, budget_limit, normalize_codes, product_scope
 from app.consultation import SERVICE_TOPIC, starts_mail
 from app.license_advice import product_in
 
@@ -55,6 +55,15 @@ class Dialogue:
                 multiplier = 1000 if (match[2] or "").startswith(("тысяч", "тыс")) else 1
                 current = f"до {int(match[1]) * multiplier} ₽. {current}"
             return f"{current}\n{self.query}"
+        if (previous := product_scope(self.query)) and not SKU_REFERENCE.search(current):
+            latest = product_scope(current)
+            fields = {"monitor": (DIAGONAL, REFRESH), "external": (CAPACITY,), "ssd": (CAPACITY,)}
+            changed = [pattern for pattern in fields.get(previous.category, ()) if pattern.search(current)]
+            if changed and (latest is None or latest.category == previous.category and not latest.model):
+                unchanged = self.query
+                for pattern in changed:
+                    unchanged = pattern.sub(" ", unchanged)
+                return f"{current}\n{unchanged}"
         if SPEC_CHECK.search(current) and not STOP.search(current.replace("не предлагайте замену", "")):
             return f"{self.query}\n{current}"
         return None
