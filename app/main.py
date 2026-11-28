@@ -36,7 +36,7 @@ from app.consultation import PURCHASE_CONTINUE, REJECTION, active_turns, mail_co
 from app.dialogue import Dialogue, DIRECTION, PRICE, SELECTION, STOP, corrected_quantity, memory_followup, route_for
 from app.equipment_advice import headset_advice, network_advice
 from app.documents import PDF_FILENAMES, package_documents, render_pdf
-from app.knowledge import Knowledge
+from app.knowledge import ORDER_STATUS, Knowledge, automatic_topic
 from app.product_advice import (CATEGORY_QUESTION, PURPOSE, alternative_scope, category_for, compare_named_products, comparison_codes, model_codes,
                                 named_product, qualification_prompt, recommendation, shortlist, short_facts)
 from app.license_advice import NO_MATCH, license_answer
@@ -55,14 +55,27 @@ LeadStatus = Literal["new", "escalated", "in_progress", "answered", "closed"]
 OPERATOR_REQUEST = re.compile(
     r"(?<!не )\b(?:позовите|позови|подключите|подключи|соедините|свяжите|переведите|"
     r"передайте|поговорить)\b"
-    r"[^.!?]{0,60}\b(?:оператор\w*|менеджер\w*|человек\w*)\b|"
+    r"[^.!?]{0,60}\b(?:оператор\w*|менеджер\w*|человек\w*|специалист\w*)\b|"
     # «Нужна защита на 40 человек» задаёт размер лицензии, а не просит оператора.
     r"(?<!не )\b(?:нужен|нужна|хочу)\s+"
     r"(?:(?:жив\w*|реальн\w*|помощь|консультаци\w*)\s+)?"
     r"(?:оператор\w*|менеджер\w*|человек(?:а)?)\b|"
-    r"^\s*(?:оператор|менеджер)(?:а)?[.!?\s]*$",
+    r"^\s*(?:оператор|менеджер|специалист)(?:а|у)?[.!?\s]*$",
     re.IGNORECASE,
 )
+ORDER_STATUS_SUBJECT = "Уточнение статуса заказа"
+ORDER_NUMBER_UNKNOWN = re.compile(
+    r"\b(?:номер\b.{0,30}\bне (?:помню|знаю|нашел|нашла)|не (?:помню|знаю|нашел|нашла)\b.{0,30}\bномер\w*|"
+    r"номер\w* (?:нет|неизвестен))\b"
+)
+
+
+def asks_order_status(message):
+    return automatic_topic(message) == ORDER_STATUS or bool(re.search(
+        r"\b(?:статус|состояние|стадия|отследить)\b.{0,75}\bзаказ\w*\b", normalize_codes(message)
+    ))
+
+
 UNRESOLVED_CATALOG = (
     NO_MATCH,
     "В каталоге не нашлось товаров",
@@ -322,7 +335,7 @@ def create_app(db_path=None):
         continue_qualification = state.route == "qualification" and new_route in (None, "search") and (
             not candidate_category or candidate_category == active_category or component_only
         ) and not model_codes(current) and not explicit_operator
-        same_equipment_task = new_route in {"network", "headset"} and state.route == new_route
+        same_equipment_task = new_route in {"network", "headset", "license"} and state.route == new_route
         if new_route and not service_only and not continued_query and not document and not operator_requested and not same_equipment_task and not continue_qualification and state.route != "alternatives":
             state = Dialogue(route=new_route, query=body.message)
         if continued_query:
@@ -344,6 +357,20 @@ def create_app(db_path=None):
             if new_route not in {"network", "headset", "mail", "license", "memory"}:
                 state = Dialogue(route="qualification", query=body.message, facts={"category": category})
                 qualification_query = body.message
+        order = state.facts.get("order_status")
+        if asks_order_status(body.message) and (service_only or not category):
+            if order is None:
+                order = {"question": body.message}
+                state.facts["order_status"] = order
+            service_only = True
+        elif order and new_route and not operator_requested and not ORDER_NUMBER_UNKNOWN.search(current):
+            state.facts.pop("order_status", None)
+            order = None
+        order_number_unknown = bool(order and ORDER_NUMBER_UNKNOWN.search(current))
+        if order_number_unknown:
+            order["number_unknown"] = True
+            service_only = True
+        order_handoff = bool(order and operator_requested)
         if qualification_query:
             state.query = qualification_query[:2000]
             scope = product_scope(qualification_query)
@@ -406,7 +433,7 @@ def create_app(db_path=None):
         ):
             count = quantity
         conditional_handoff = operator_requested and bool(re.search(r"\bесли\b", current))
-        license_result = (license_answer(body.message, [turn["question"] for turn in incoming_history], catalog)
+        license_result = (license_answer(body.message, [turn["question"] for turn in incoming_history], catalog, state=state)
                           if not operator_requested or conditional_handoff else None)
         if conditional_handoff and license_result and license_result[1]:
             operator_requested = False
@@ -444,6 +471,10 @@ def create_app(db_path=None):
                 result["answer"] += "\n\n" + next_step
                 delivery_handoff = (subject, sku)
                 sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
+        elif order_number_unknown:
+            result = {"answer": "Менеджер может помочь найти заказ, даже если вы не помните номер. Передать вопрос?",
+                      "provider": "knowledge", "actions": []}
+            consultation_subject = ORDER_STATUS_SUBJECT
         elif not verified_reference and (re.search(r"\b(?:статус|состояние|стадия|отследить)\b.{0,75}\bзаказ\w*\b", current) or (
             re.search(r"\bномер\s+заказа\b", current)
             and re.search(r"\b(?:где|как|найти|посмотреть)\b", current)
@@ -590,11 +621,22 @@ def create_app(db_path=None):
             if not reference:
                 consultation_subject = body.message
             result = {"answer": answer, "provider": "knowledge", "actions": []}
-        elif guidance:
-            answer, sources = guidance
-            result = {"answer": answer, "provider": "catalog", "actions": []}
         elif license_result:
             answer, products, searched = license_result
+            license_facts = state.facts.get("license", {})
+            if not products and license_facts:
+                state.sku, state.quantity, state.options = None, None, []
+            if not products and license_facts.get("edition_unknown"):
+                consultation_subject = "Проверка продления: " + ", ".join([
+                    license_facts["family"],
+                    *[f"{label}: {value}" for label, value in license_facts.get("seats", {}).items()],
+                    f"срок: {license_facts.get('months', 'не указан')} мес.",
+                    f"платформа: {license_facts.get('platform', 'не указана')}",
+                    "редакция не установлена",
+                ])
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif guidance:
+            answer, sources = guidance
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif len(codes) == 1 and not service_only and (
             scope is None or scope.model or state.route == "alternatives"
@@ -732,17 +774,30 @@ def create_app(db_path=None):
             consultation_subject or (state.query if not service_only else body.message) or body.message,
             document.sku if document_handoff else None if service_only else state.sku,
         )
-        requested_handoff = state.handoff if operator_requested else None
+        if order and (order_number_unknown or order_handoff):
+            offered_subject = f"{ORDER_STATUS_SUBJECT}. {order['question']}"
+            if order.get("number_unknown"):
+                offered_subject += " Номер заказа неизвестен."
+            offered_sku = None
+        requested_handoff = state.handoff if operator_requested and not order_handoff else None
         if not operator_requested and not suppress_manager and (model_unavailable or needs_manager):
             state.handoff = {"subject": offered_subject, "sku": offered_sku, "lead": None}
             if not result["answer"].endswith("?") and "могу передать вопрос менеджеру" not in result["answer"].lower():
                 result["answer"] += "\n\nПередать вопрос менеджеру?"
         wants_escalation = operator_requested and not suppress_manager
-        lead_hint = requested_handoff.get("lead") if requested_handoff else state.lead
+        lead_hint = order.get("lead") if order_handoff else requested_handoff.get("lead") if requested_handoff else state.lead
         existing_lead = (commercial.append_customer_detail(owner, lead_hint, body.message)
                          if owner and wants_escalation and lead_hint else None)
+        if owner and order_handoff and lead_hint and not existing_lead:
+            try:
+                existing_lead = commercial.lead_detail(lead_hint, owner)
+            except KeyError:
+                pass
         should_escalate = owner is not None and wants_escalation and (existing_lead or reserve_lead_slot(owner))
-        if should_escalate:
+        if should_escalate and order_handoff:
+            result["answer"] = ("Этот вопрос уже передан менеджеру." if existing_lead else
+                                "Передал ваш вопрос менеджеру. Он поможет уточнить статус заказа.")
+        elif should_escalate:
             result["answer"] += "\n\nСтатус обращения: ожидает ответа менеджера."
         elif wants_escalation and owner is not None:
             result["answer"] = "Достигнут лимит обращений. Повторите попытку через минуту."
@@ -769,12 +824,15 @@ def create_app(db_path=None):
             subject, lead_sku = offered_subject, offered_sku
             if requested_handoff:
                 subject, lead_sku = requested_handoff["subject"], requested_handoff["sku"]
-            elif not state.query and trusted_history and not consultation_subject:
+            elif not order_handoff and not state.query and trusted_history and not consultation_subject:
                 subject = trusted_history[-1]["question"]
             lead = existing_lead or commercial.create_lead(
                 SYSTEM_CONTACT, subject, sku=lead_sku, escalation=True, owner=owner,
             )
-            state.lead = lead["id"]
+            if order_handoff:
+                order["lead"] = lead["id"]
+            else:
+                state.lead = lead["id"]
             state.handoff = None
             result["escalation"] = {"status": lead["status"], "id": lead["id"]}
             actions.append({"type": "lead_escalation", "status": "done"})

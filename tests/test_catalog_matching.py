@@ -658,3 +658,56 @@ class CatalogMatchingTests(TestCase):
             self.assertNotIn("catalog_search", [action["type"] for action in revision["actions"]])
             self.assertNotIn("escalation", revision)
             provider.assert_not_called()
+
+    def test_license_keeps_computers_platform_and_spelled_term_in_client_session(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        token = "R" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        self.chat(Chat(message="Нужно продлить Dr.Web для компьютеров компании."), request)
+        self.chat(Chat(message="18."), request)
+        response = self.chat(Chat(message="На один год, все на Windows."), request)
+        state = self.commercial.chat_history(owner, include_context=True)[-1]["dialogue"]["facts"]["license"]
+        self.assertEqual(state["seats"], {"компьютеры": 18})
+        self.assertEqual(state["kind"], "renew")
+        self.assertEqual(state["months"], 12)
+        self.assertEqual(state["platform"], "windows")
+        self.assertNotIn("на сколько", response["answer"])
+        self.assertEqual(response["products"], [])
+        followup = self.chat(Chat(message="Редакцию не знаю."), request)
+        self.assertNotIn("escalation", followup)
+        self.assertIn("Передать вопрос", followup["answer"])
+        self.assertFalse(self.commercial.client_leads(owner))
+        handoff = self.chat(Chat(message="Да."), request)
+        lead = self.commercial.get_lead(handoff["escalation"]["id"])
+        self.assertIn("компьютеры: 18", lead["message"])
+        self.assertIn("windows", lead["message"])
+
+    def test_order_status_handoff_reuses_subject_without_product_or_model(self):
+        from hashlib import sha256
+        from app.main import SESSION_COOKIE
+
+        token = "O" * 43
+        owner = sha256(token.encode()).hexdigest()
+        self.commercial.create_session(owner, 3600)
+        request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+        with patch("app.main.reply") as model:
+            question = "Как проверить статус ранее оформленного заказа?"
+            self.chat(Chat(message=question), request)
+            unknown = self.chat(Chat(message="Номер заказа не помню."), request)
+            self.assertIn("Передать вопрос?", unknown["answer"])
+            self.assertFalse(self.commercial.client_leads(owner))
+            first = self.chat(Chat(message="Менеджеру"), request)
+            second = self.chat(Chat(message="Передайте вопрос специалисту."), request)
+            model.assert_not_called()
+        lead_id = first["escalation"]["id"]
+        self.assertEqual(lead_id, second["escalation"]["id"])
+        record = self.commercial.lead_detail(lead_id, owner)
+        self.assertTrue(record["message"].startswith("Уточнение статуса заказа"))
+        self.assertIsNone(record["sku"])
+        self.assertTrue(any(entry["content"] == question for entry in record["history"]))
+        self.assertTrue(any("не помню" in entry["content"] for entry in record["history"]))
+        self.assertEqual(len(self.commercial.client_leads(owner)), 1)

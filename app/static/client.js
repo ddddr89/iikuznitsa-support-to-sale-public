@@ -181,8 +181,10 @@ function submit(id, statusId, pending, action) {
   });
 }
 
+let chatShortcut = "";
 submit("chat-form", "chat-status", "Готовим ответ…", async () => {
-  const message = question.value.trim();
+  const message = chatShortcut || question.value.trim();
+  chatShortcut = "";
   if (!message) throw new Error("Опишите задачу.");
   const intent = ++catalogIntent;
   await restoredChat;
@@ -222,7 +224,16 @@ function openHandoff() {
   byId("escalate").setAttribute("aria-expanded", "true");
 }
 
-byId("escalate").addEventListener("click", () => {
+byId("escalate").addEventListener("click", async () => {
+  await restoredChat;
+  if (history.length) {
+    const form = byId("chat-form");
+    if (!form.querySelector("button").disabled) {
+      chatShortcut = "Позовите менеджера.";
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
+    return;
+  }
   escalation = true;
   byId("lead-message").value ||= lastQuestion || question.value.trim();
   byId("request").textContent = "Передать вопрос менеджеру";
