@@ -196,8 +196,8 @@ PREFERENCES = (
 )
 
 
-def recommend_offer(items, task, budget=None):
-    """Возвращает конкретный SKU только при различающихся подтверждениях."""
+def recommend_offer(items, task, budget=None, *, qualified=False):
+    """Выбирает из проверенного подбора или уточняет ещё непроверенное требование."""
     goal = normalize_codes(task)
     if not items:
         return None, "Какие из предложенных товаров вы хотите сравнить?"
@@ -223,7 +223,7 @@ def recommend_offer(items, task, budget=None):
             scores[index] += 1
             reasons[index].append("Это самый доступный из предложенных вариантов")
     if re.search(r"памят\w*|многозадач|много.*приложен", goal):
-        amount = [re.search(r"(\d+)\s*(?:гб|gb)", normalize(" ".join(
+        amount = [re.search(r"(\d+)\s*(?:гб|gb)\b", normalize(" ".join(
             aspect_values(Aspect("", r"озу|оперативн", "", ""), record)
         ))) for record in records]
         if all(amount):
@@ -241,9 +241,12 @@ def recommend_offer(items, task, budget=None):
             index = weights.index(min(weights))
             scores[index] += 2
             reasons[index].append(f"При весе {str(weights[index]).replace('.', ',')} кг его удобнее носить с собой")
-    best = scores.index(max(scores))
+    highest = max(scores)
+    tied = [i for i, score in enumerate(scores) if score == highest]
+    economy_tie = qualified and len(tied) > 1
+    best = min(tied, key=lambda i: (items[i]["price_minor"] is None, items[i]["price_minor"] or 0)) if economy_tie else tied[0]
     item = items[best]
-    if (scores[best] == 0 and len(items) > 1) or (len(items) > 1 and scores.count(scores[best]) > 1):
+    if not qualified and len(items) > 1 and (highest == 0 or len(tied) > 1):
         columns = next((aspect.title for aspect in ASPECTS if len({
             frozenset(detail[aspect.title]) for detail in facts
         }) > 1), None)
@@ -259,7 +262,8 @@ def recommend_offer(items, task, budget=None):
         ):
             question = "Кроме HDMI, нужен ли вам DisplayPort?"
         return None, "По подтверждённым данным один вариант пока не выделяется для вашей задачи. " + question
-    parts = [f"Для вашей задачи я рекомендую {item_label(item)}."]
+    label = item["name"] if qualified else item_label(item)
+    parts = [f"Для вашей задачи я рекомендую {label}."]
     if reasons[best]:
         supporting = []
         if match := re.search(r"\b(\d+)\s*[×xх]\s*gigabit", normalize(" ".join(facts[best]["Порты"]))):
@@ -269,8 +273,25 @@ def recommend_offer(items, task, budget=None):
             if connection:
                 supporting.append(f"Подключение к совместимому устройству через {connection}")
         parts.extend("• " + reason + "." for reason in (reasons[best] + supporting)[:2])
+    elif qualified:
+        screen = facts[best]["Экран"]
+        field = next((facts[best][name] for name in ("Порты", "Подключение", "Микрофон",
+                     "Память и накопитель", "Лицензия и совместимость") if facts[best][name]), ())
+        if screen and re.search(r"офис|работ|учеб|документ", goal):
+            detail = ", ".join(screen[:3])
+            parts.append(f"Для работы с документами подойдёт экран: {detail}.")
+        elif field:
+            parts.append("По карточке подтверждено: " + ", ".join(field[:2]) + ".")
+        else:
+            parts.append("Модель подходит под указанные вами условия.")
     else:
         parts.append("Из предложенных вариантов осталась одна позиция.")
+    if economy_tie:
+        prices = [items[i]["price_minor"] for i in tied if items[i]["price_minor"] is not None]
+        if len(set(prices)) > 1:
+            parts.append("По важным для вашей задачи условиям преимущества более дорогих вариантов не подтверждены.")
+        elif len(prices) == len(tied):
+            parts.append("По указанным условиям варианты равнозначны и стоят одинаково.")
     price = item["price_minor"]
     if price is not None:
         if budget is not None and price <= budget:

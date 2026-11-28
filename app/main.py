@@ -559,7 +559,12 @@ def create_app(db_path=None):
         )):
             task = " ".join([state.query, *[turn["question"] for turn in incoming_history[-5:]], body.message])
             budget = budget_limit(current) or state.facts.get("budget") or budget_limit(normalize_codes(task))
-            preferred, answer = recommend_offer(compared, task, budget)
+            new_requirements = product_scope(body.message)
+            eligible = [item for item in compared if new_requirements is None or new_requirements.matches(item)]
+            if eligible:
+                preferred, answer = recommend_offer(eligible, task, budget, qualified=bool(state.facts.get("qualified_options")))
+            else:
+                preferred, answer = None, "Среди предложенных товаров не нашлось варианта с новым требованием. Оно обязательно?"
             state.pending = None if preferred else "recommendation"
             if preferred:
                 selection = {"sku": preferred["sku"], "quantity": state.quantity}
@@ -805,6 +810,13 @@ def create_app(db_path=None):
             result["answer"] = "Откройте форму «Позвать менеджера», чтобы отправить обращение."
         if products:
             state.options = list(dict.fromkeys(item["sku"] for item in products))
+            state.facts["qualified_options"] = result["provider"] == "catalog" and (
+                resolved_catalog_lookup or state.route in {"network", "headset", "license"}
+            )
+            if len(products) > 1 and state.facts["qualified_options"] and state.route != "network":
+                _, requested_quantity = quantity_in(current)
+                if requested_quantity:
+                    state.quantity = requested_quantity
         if selection is None and products and (len(products) == 1 or (
             scope and scope.model and all(scope.matches(item) for item in products)
         )):

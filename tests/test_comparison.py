@@ -41,3 +41,14 @@ class ComparisonTests(TestCase):
         for phrase, expected in phrases.items():
             with self.subTest(phrase=phrase):
                 self.assertEqual(quantity_in(normalize_codes(phrase), standalone=True)[1], expected)
+
+    def test_qualified_tie_uses_price_without_asking_for_known_requirements(self):
+        offers = [
+            offer("1111", "Коммутатор SW100", 400000, []),
+            offer("2222", "Коммутатор SW200", 300000, []),
+        ]
+        chosen, advice = recommend_offer(offers, "Для офиса, гигабит, до 5000 ₽", 500000, qualified=True)
+        self.assertEqual(chosen["sku"], "2222")
+        self.assertIn("3 000 ₽", advice)
+        self.assertNotIn("?", advice)
+        self.assertNotIn("SW100", advice)
