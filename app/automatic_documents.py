@@ -27,8 +27,15 @@ PRODUCT_COUNT = (r"монитор\w*|ноутбук\w*|накопител\w*|д�
 QUANTITY = re.compile(rf"(?<![\w.,+\-])({AMOUNT})\s*(?:(?:внешн\w*|внутренн\w*|жестк\w*|твердотельн\w*|портативн\w*|игров\w*|офисн\w*)\s+)*(?:штук\w*|шт\.?|единиц\w*|экземпляр\w*|{PRODUCT_COUNT})\b")
 COUNT_BEFORE_MODEL = re.compile(rf"(?<![\w.,+\-])({AMOUNT})\s+(?=[a-z]+\s+(?:[a-z0-9-]*\d[a-z0-9-]*)\b)")
 LABELLED_QUANTITY = re.compile(rf"\bколичество\s*[:—-]?\s*({AMOUNT})(?![\w.,])")
+PURCHASE_VERB = r"(?:беру|берем|возьму|возьмем|закажу|закажем|куплю|купим)"
+# Количество без единицы допустимо после глагола покупки на границе фразы.
+# Числа в модели и характеристики вроде «2 ТБ» сюда не попадают.
+PURCHASE_QUANTITY = re.compile(
+    rf"\b{PURCHASE_VERB}\s+(?:(?:пока|только)\s+)*({AMOUNT})"
+    rf"(?=\s*(?:$|[!?;]|[.,](?!\d)|(?:и\s+)?{REQUEST}\b))"
+)
 QUANTITY_ONLY = re.compile(
-    rf"(?:(?:а\s+)?если\s+(?:взять|заказать|купить)\s+|(?:пока(?: только)?|только|оставим|берем|возьмем|закажем|нужн(?:ы|о)|хочу|возьму|тогда|теперь|давайте|"
+    rf"(?:(?:а\s+)?если\s+(?:взять|заказать|купить)\s+|(?:пока(?: только)?|только|оставим|{PURCHASE_VERB}|нужн(?:ы|о)|хочу|тогда|теперь|давайте|"
     rf"(?:поменяйте|измените)(?: количество)? на)\s+|количество\s*[:—-]?\s*)?"
     rf"({AMOUNT})(?:\s*(?:штук\w*|шт\.?|единиц\w*|экземпляр\w*|{PRODUCT_COUNT}))?[.!?]?"
 )
@@ -57,7 +64,7 @@ def number(value):
 
 
 def quantity_in(text, *, standalone=False):
-    values = {match[1] for pattern in (QUANTITY, LABELLED_QUANTITY, COUNT_BEFORE_MODEL) for match in pattern.finditer(text)}
+    values = {match[1] for pattern in (QUANTITY, LABELLED_QUANTITY, COUNT_BEFORE_MODEL, PURCHASE_QUANTITY) for match in pattern.finditer(text)}
     if not values and standalone and (match := QUANTITY_ONLY.fullmatch(text)):
         values = {match[1]}
     if not values:

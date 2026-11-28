@@ -91,3 +91,25 @@ class AutomaticDocumentsTests(unittest.TestCase):
                          "Не нужно отправлять мне счёт", "Нужен счётчик"):
             with self.subTest(question=question):
                 self.assertIsNone(document_request(question, [self.known], self.catalog))
+
+    def test_purchase_quantity_and_document_request_in_one_turn(self):
+        selection = {"sku": "465223", "quantity": 4}
+        for phrase, expected in (
+            ("Хорошо, беру один. Подготовьте КП и счёт", 1),
+            ("Возьму одну, выставьте счёт", 1),
+            ("Одну штуку. Подготовьте КП", 1),
+            ("Берём пару и подготовьте счёт", 2),
+            ("Закажу три. Пришлите КП и счёт", 3),
+        ):
+            with self.subTest(phrase=phrase):
+                plan = document_request(phrase, [self.known], self.catalog, selection=selection)
+                self.assertEqual((plan.sku, plan.quantity, plan.missing), ("465223", expected, None))
+
+    def test_purchase_quantity_remains_known_while_selecting_a_product(self):
+        options = turn("Какие есть мониторы?", "Варианты: артикул 465223; артикул 462252.")
+        message = "Беру один. Подготовьте КП и счёт"
+        plan = document_request(message, [options], self.catalog)
+        self.assertEqual((plan.sku, plan.quantity), (None, 1))
+        self.assertTrue(plan.missing.endswith("укажите артикул товара."))
+        resolved = document_request("462252", [options, turn(message, plan.missing)], self.catalog)
+        self.assertEqual((resolved.sku, resolved.quantity, resolved.missing), ("462252", 1, None))
