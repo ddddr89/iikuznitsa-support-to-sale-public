@@ -324,14 +324,7 @@ def create_app(db_path=None):
                 order = state.facts.get("order_status")
                 pending = state.handoff or {}
                 lead_id = order.get("lead") if order else pending.get("lead") or state.lead
-                lead = None
-                if owner and lead_id:
-                    try:
-                        previous = commercial.lead_detail(lead_id, owner)
-                        if previous["status"] != "closed":
-                            lead = previous
-                    except KeyError:
-                        pass
+                lead = commercial.waiting_lead(lead_id, owner) if owner and lead_id else None
                 if not owner:
                     answer = "Откройте чат и выберите «Позвать менеджера»."
                 elif not lead and not reserve_lead_slot(owner):
@@ -350,6 +343,9 @@ def create_app(db_path=None):
                         SYSTEM_CONTACT, subject, sku=sku, escalation=True, owner=owner,
                     )
                     commercial.append_customer_detail(owner, lead["id"], body.message)
+                    lead = commercial.waiting_lead(lead["id"], owner)
+                    if not lead:
+                        raise HTTPException(503, "Не удалось передать обращение. Попробуйте ещё раз.")
                     answer = "Конечно. Передал ваше обращение менеджеру. Он ответит вам здесь, в чате"
                     if order:
                         order["lead"] = lead["id"]

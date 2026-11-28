@@ -348,6 +348,15 @@ class Commercial:
                 raise KeyError(lead_id)
             return dict(row)
 
+    def waiting_lead(self, lead_id, owner):
+        """Проверяет принадлежность и тот же признак ожидания, что в очереди менеджера."""
+        with self.connection() as db:
+            row = db.execute(f"""
+                SELECT leads.id, status FROM leads JOIN lead_sessions ON leads.id = lead_id
+                WHERE leads.id = ? AND owner = ? AND status != 'closed' AND {WAITING_FOR_REPLY}
+            """, (lead_id, owner)).fetchone()
+            return dict(row) if row else None
+
     def lead_queue(self, page=1, limit=100, view="all"):
         """Читает страницу и глобальный счётчик ожидания из одного снимка."""
         where = {

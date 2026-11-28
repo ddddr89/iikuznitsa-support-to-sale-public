@@ -134,3 +134,30 @@ class ProviderOutageTests(TestCase):
                     self.assertEqual(reopened["status"], "escalated")
                     self.assertEqual(chat(shortcut, request)["escalation"], reopened)
                     self.assertEqual(commercial.lead_detail(original["id"], owner)["status"], "closed")
+
+    def test_answered_lead_is_not_reused_for_a_new_manager_request(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "test.sqlite3"
+            commercial = Commercial(path)
+            commercial.init()
+            Knowledge(path).init()
+            with patch.dict("os.environ", {"APP_KNOWLEDGE_DB": str(path)}):
+                app = create_app(path)
+            chat = next(route.endpoint for route in app.routes if route.path == "/api/v1/chat")
+            token = "A" * 43
+            owner = sha256(token.encode()).hexdigest()
+            commercial.create_session(owner, 600)
+            request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+            shortcut = Chat(message="Позовите менеджера.")
+            original = chat(shortcut, request)["escalation"]["id"]
+            commercial.update_lead(original, answer="Ответ на первое обращение.")
+            self.assertEqual(commercial.lead_queue(view="open")["waiting_count"], 0)
+            message = "Я хочу обсудить закупку оборудования непосредственно с менеджером. Можно без AI-консультации?"
+            current = chat(Chat(message=message), request)["escalation"]
+            self.assertNotEqual(original, current["id"])
+            self.assertEqual(chat(shortcut, request)["escalation"], current)
+            queue = commercial.lead_queue(view="open")
+            self.assertEqual(queue["waiting_count"], 1)
+            self.assertEqual(queue["items"][0]["id"], current["id"])
+            self.assertTrue(queue["items"][0]["requires_reply"])
+            self.assertEqual(commercial.lead_detail(original, owner)["status"], "answered")
