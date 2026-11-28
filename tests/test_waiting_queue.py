@@ -86,3 +86,11 @@ class WaitingQueueTests(TestCase):
         with self.store.connection() as db:
             self.assertIsNone(db.execute("SELECT requires_reply FROM leads WHERE id = ?", (lead_id,)).fetchone()[0])
             self.assertEqual(db.execute("SELECT count(*) FROM lead_activity WHERE lead_id = ?", (lead_id,)).fetchone()[0], 0)
+
+    def test_contact_attachment_is_owner_scoped_and_does_not_change_queue_priority(self):
+        lead = self.store.create_lead("Контакт не указан", "Нужен оператор", escalation=True, owner="owner")
+        self.assertIsNone(self.store.update_customer_contact("other", lead["id"], "wrong@example.invalid"))
+        updated = self.store.update_customer_contact("owner", lead["id"], "owner@example.invalid")
+        self.assertTrue(updated["requires_reply"])
+        self.assertNotIn("contact", updated)
+        self.assertEqual(self.store.lead_detail(lead["id"])["contact"], "owner@example.invalid")

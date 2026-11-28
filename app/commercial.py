@@ -242,15 +242,19 @@ class Commercial:
             lead.pop("contact")
         return lead
 
-    def update_lead(self, lead_id, status=None, answer=None, closure_reason=None):
+    def update_lead(self, lead_id, status=None, answer=None, closure_reason=None, *, expected=None):
         now = datetime.now(timezone.utc).isoformat()
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            lead = db.execute(f"SELECT status, {WAITING_FOR_REPLY} AS pending FROM leads WHERE id = ?",
+            lead = db.execute(f"SELECT status, requires_reply, {WAITING_FOR_REPLY} AS pending FROM leads WHERE id = ?",
                               (lead_id,)).fetchone()
             if lead is None:
                 raise KeyError(lead_id)
             waiting = bool(lead["pending"])
+            if expected is not None:
+                last_event = db.execute("SELECT max(id) FROM lead_activity WHERE lead_id = ?", (lead_id,)).fetchone()[0]
+                if (lead["status"], lead["requires_reply"], waiting, last_event) != expected:
+                    raise ValueError("Обращение изменилось после подготовки списка")
             if status == "closed" and waiting and not (closure_reason or answer):
                 raise ValueError("Укажите причину закрытия обращения без ответа")
             if status == "answered" and not answer and (waiting or not db.execute("""
@@ -281,6 +285,19 @@ class Commercial:
                     VALUES (?, 'closure_reason', ?, ?)
                 """, (lead_id, closure_reason, now))
         return self.lead_detail(lead_id)
+
+    def update_customer_contact(self, owner, lead_id, contact):
+        """Сохраняет контакт в открытой заявке только для её владельца."""
+        with self.connection() as db:
+            updated = db.execute("""
+                UPDATE leads SET contact = ?
+                WHERE id = ? AND status IN ('new', 'escalated', 'in_progress') AND EXISTS (
+                    SELECT 1 FROM lead_sessions WHERE lead_id = leads.id AND owner = ?
+                )
+            """, (contact, lead_id, owner))
+            if not updated.rowcount:
+                return None
+        return self.lead_detail(lead_id, owner)
 
     def append_customer_detail(self, owner, lead_id, message):
         """Дополняет ровно выбранное открытое обращение той же сессии."""

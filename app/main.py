@@ -864,9 +864,17 @@ def create_app(db_path=None):
             raise HTTPException(429, "Лимит обращений", {"Retry-After": "60"})
         if owner and body.escalation:
             state = Dialogue.load(commercial.chat_history(owner, include_context=True))
-            if state.handoff:
-                offer = state.handoff
+            order = state.facts.get("order_status", {})
+            lead_id = order.get("lead") or state.lead
+            if lead_id and not state.handoff:
+                if existing := commercial.update_customer_contact(owner, lead_id, body.contact):
+                    commercial.append_customer_detail(owner, lead_id, body.message)
+                    return {"id": existing["id"], "status": existing["status"], "duplicate": True}
+            if state.handoff or order:
+                offer = state.handoff or {"subject": f"{ORDER_STATUS_SUBJECT}. {order['question']}", "sku": None}
                 result = commercial.create_lead(body.contact, offer["subject"], offer["sku"], True, owner)
+                if result["duplicate"]:
+                    commercial.update_customer_contact(owner, result["id"], body.contact)
                 if body.message != offer["subject"]:
                     commercial.append_customer_detail(owner, result["id"], body.message)
                 return result

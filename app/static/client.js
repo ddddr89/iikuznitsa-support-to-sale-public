@@ -222,6 +222,7 @@ question.addEventListener("keydown", (event) => {
 function openHandoff() {
   byId("handoff").hidden = false;
   byId("escalate").setAttribute("aria-expanded", "true");
+  byId("escalate-contact").setAttribute("aria-expanded", "true");
 }
 
 byId("escalate").addEventListener("click", async () => {
@@ -234,16 +235,26 @@ byId("escalate").addEventListener("click", async () => {
     }
     return;
   }
+  openContactForm();
+});
+
+function openContactForm() {
   escalation = true;
   byId("lead-message").value ||= lastQuestion || question.value.trim();
   byId("request").textContent = "Передать вопрос менеджеру";
   openHandoff();
   byId("contact").focus();
+}
+
+byId("escalate-contact").addEventListener("click", async () => {
+  await restoredChat;
+  openContactForm();
 });
 
 byId("close-handoff").addEventListener("click", () => {
   byId("handoff").hidden = true;
   byId("escalate").setAttribute("aria-expanded", "false");
+  byId("escalate-contact").setAttribute("aria-expanded", "false");
   byId("escalate").focus();
 });
 
@@ -260,11 +271,12 @@ submit("lead-form", "lead-status", "Передаём заявку…", async (fo
   await startSession();
   const lead = await request("/leads", { body: { contact, message, ...(sku ? { sku } : {}), ...(escalation ? { escalation } : {}) } });
   form.reset();
+  byId("contact").value = contact;
   escalation = false;
   byId("request").textContent = "Оставить заявку";
   const result = lead.status === "escalated" ? " ожидает ответа менеджера." : " принята.";
   const duplicate = lead.duplicate ? " Используем ранее созданную заявку." : "";
-  status("lead-status", "Заявка № " + lead.id + result + duplicate);
+  status("lead-status", "Заявка № " + lead.id + result + duplicate + " Ответ появится в этой переписке.");
   byId("open-my-leads").hidden = false;
 });
 

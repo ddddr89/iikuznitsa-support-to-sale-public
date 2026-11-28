@@ -54,14 +54,16 @@
       </form>
       <p id="chat-status" class="status" role="status"></p>
       <button type="button" class="secondary" id="escalate" aria-controls="handoff" aria-expanded="false">Позвать менеджера</button>
+      <button type="button" class="secondary" id="escalate-contact" aria-controls="handoff" aria-expanded="false">Указать контакт для менеджера</button>
       <section class="request" id="handoff" aria-labelledby="request" hidden>
         <div class="section-heading">
           <h3 id="request" tabindex="-1">Оставить заявку</h3>
           <button type="button" id="close-handoff" class="secondary">Свернуть</button>
         </div>
+        <p class="meta">Ответ менеджера появится в этой переписке.</p>
         <form id="lead-form">
           <label for="contact">Электронная почта или телефон</label>
-          <input id="contact" maxlength="320" required>
+          <input id="contact" maxlength="320" autocomplete="email" required>
           <label for="sku">Артикул товара <span class="optional">(необязательно)</span></label>
           <input id="sku" maxlength="200">
           <label for="lead-message">Что нужно уточнить?</label>
