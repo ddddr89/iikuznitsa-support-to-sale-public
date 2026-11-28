@@ -25,17 +25,19 @@ from app.ai import reply
 from app.automatic_documents import document_quantity_followup, document_request, quantity_for_product, quantity_in, recently_shown
 from app.catalog import Catalog
 from app.catalog_advice import (
-    DELIVERY, DELIVERY_REQUEST, DELIVERY_DETAILS, advisory, comparison_details, checked_model_answer, compare_monitor_models, delivery_details_followup, document_confirmation,
+    DELIVERY, DELIVERY_REQUEST, DELIVERY_DETAILS, advisory, checked_model_answer, compare_monitor_models, delivery_details_followup, document_confirmation,
     item_text, price_text, purchase_with_delivery, quantity_label, scoped_answer,
 )
 from app.catalog_matching import CATEGORIES, MODEL_DETAIL, ProductScope, budget_limit, normalize_codes, product_scope
 from app.commercial import Commercial
+from app.comparison import (ACCEPT_SELECTION, COMPARE_REQUEST, FOLLOWUP, PRICE_ONLY,
+                            RECOMMEND_REQUEST, compare_products, recommend_offer)
 from app.consultation import PURCHASE_CONTINUE, REJECTION, active_turns, mail_consultation
 from app.dialogue import Dialogue, DIRECTION, PRICE, SELECTION, STOP, corrected_quantity, memory_followup, route_for
 from app.equipment_advice import headset_advice, network_advice
 from app.documents import PDF_FILENAMES, package_documents, render_pdf
 from app.knowledge import Knowledge
-from app.product_advice import (CATEGORY_QUESTION, PURPOSE, alternative_scope, category_for, compare_named_products, model_codes,
+from app.product_advice import (CATEGORY_QUESTION, PURPOSE, alternative_scope, category_for, compare_named_products, comparison_codes, model_codes,
                                 named_product, qualification_prompt, recommendation, shortlist, short_facts)
 from app.license_advice import NO_MATCH, license_answer
 
@@ -74,6 +76,15 @@ UNRESOLVED_CATALOG = (
 )
 SYSTEM_CONTACT = "Контакт не указан · ответ в чате"
 CARD_CAPACITY = re.compile(r"\b(?:на\s+)?(\d+(?:[.,]\d+)?)\s*(тб|tb|гб|gb)\b")
+
+
+def backend_digest():
+    """Фиксирует версию Python-кода при создании приложения."""
+    digest = sha256()
+    for path in sorted(STATIC.parent.glob("*.py")):
+        digest.update(path.name.encode() + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def catalog_card(item):
@@ -177,6 +188,7 @@ def require_manager(
 
 
 def create_app(db_path=None):
+    build = backend_digest()
     path = db_path or os.getenv("APP_DB_PATH", "support.sqlite3")
     catalog = Catalog(path)
     commercial = Commercial(path)
@@ -244,7 +256,8 @@ def create_app(db_path=None):
         return FileResponse(STATIC / "manager.html")
 
     @api.get("/api/v1/health")
-    def health():
+    def health(response: Response):
+        response.headers["X-Support-Backend"] = build
         return {"status": "ok"}
 
     @api.get("/api/v1/catalog/status", dependencies=[Depends(require_manager)])
@@ -295,7 +308,8 @@ def create_app(db_path=None):
         ))
         operator_requested = explicit_operator or consent
         continued_query = state.search_query(body.message) if not cancel and not service_only else None
-        requested_documents = "Подготовьте счёт" if PURCHASE_CONTINUE.fullmatch(current) else body.message
+        approve_documents = state.pending == "offer_documents" and re.fullmatch(r"(?:да|давайте|подготовьте)[.! ]*", current)
+        requested_documents = "Подготовьте счёт" if PURCHASE_CONTINUE.fullmatch(current) or approve_documents else body.message
         # Оформление сначала разрешает ссылку на текущий выбор. Новая товарная
         # задача заводится лишь после определения того, что это не продолжение.
         selection_hint = {"sku": state.sku, "quantity": state.quantity} if state.sku and not cancel else None
@@ -314,7 +328,8 @@ def create_app(db_path=None):
         if continued_query:
             state.query = continued_query[:2000]
         scope = product_scope(continued_query or body.message)
-        codes = model_codes(current)
+        comparison_requested = not service_only and bool(COMPARE_REQUEST.search(current))
+        codes = comparison_codes(body.message, catalog) if comparison_requested else model_codes(current)
         category = category_for(current)
         current_selection = catalog.get(state.sku) if state.sku else None
         quantity_for_selected_category = bool(current_selection and quantity_in(current)[0]
@@ -508,6 +523,42 @@ def create_app(db_path=None):
             delivery_handoff = (subject, sku)
             sources = [{"title": "Условия доставки Softline", "url": DELIVERY}]
             result = {"answer": f"{opening}\n\n{next_step}", "provider": "catalog", "actions": []}
+        elif compared and not service_only and (RECOMMEND_REQUEST.search(current) or (
+            state.pending == "recommendation" and not new_route and not codes
+        )):
+            task = " ".join([state.query, *[turn["question"] for turn in incoming_history[-5:]], body.message])
+            budget = budget_limit(current) or state.facts.get("budget") or budget_limit(normalize_codes(task))
+            preferred, answer = recommend_offer(compared, task, budget)
+            state.pending = None if preferred else "recommendation"
+            if preferred:
+                selection = {"sku": preferred["sku"], "quantity": state.quantity}
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif chosen and ACCEPT_SELECTION.fullmatch(current):
+            price = chosen["price_minor"]
+            if not state.quantity:
+                answer = "Товар выбран. Сколько штук нужно?"
+            elif price is None:
+                answer = "Товар выбран. Цену уточнит менеджер. Передать вопрос?"
+            else:
+                answer = f"За {quantity_label(chosen, state.quantity)} — {price_text(price * state.quantity)}. Подготовить КП и счёт?"
+                state.pending = "offer_documents"
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif state.route == "comparison" and not new_route and not codes and (FOLLOWUP.search(current) or PRICE_ONLY.search(current)) and len(compared) >= 2:
+            answer, sources = compare_products(compared, body.message, recommendation_only=not PRICE_ONLY.search(current))
+            result = {"answer": answer, "provider": "catalog", "actions": []}
+        elif (comparison := compare_monitor_models(body.message, catalog) or (
+            compare_named_products(catalog, codes) if comparison_requested and 2 <= len(codes) <= 4 else None
+        ) or (
+            compare_monitor_models(earlier, catalog) if PRICE_ONLY.search(current) and not new_route else None
+        )) is not None:
+            answer, products = comparison
+            if products:
+                state.query = body.message if codes else earlier
+                state.route = "comparison"
+                state.options = [item["sku"] for item in products]
+                answer, sources = compare_products(products, body.message)
+            searched = True
+            result = {"answer": answer, "provider": "catalog", "actions": []}
         elif state.route in {"headset", "network"} and not service_only:
             give_advice = headset_advice if state.route == "headset" else network_advice
             answer, products, sources = give_advice(state, body.message, catalog)
@@ -544,29 +595,6 @@ def create_app(db_path=None):
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif license_result:
             answer, products, searched = license_result
-            result = {"answer": answer, "provider": "catalog", "actions": []}
-        elif state.route == "comparison" and not new_route and re.search(
-            r"\b(?:зарядк\w*|проводн\w* сеть|одним кабелем|ethernet)\b", current
-        ) and (followup := comparison_details(compared, recommendation_only=True))[0]:
-            answer, sources = followup
-            result = {"answer": answer, "provider": "catalog", "actions": []}
-        elif (comparison := compare_monitor_models(body.message, catalog) or (
-            compare_named_products(catalog, codes) if len(codes) == 2 and not service_only
-            and re.search(r"\b(?:сравн\w*|отлича\w*)\b", current) else None
-        ) or (
-            compare_monitor_models(state.query if state.route == "comparison" else earlier, catalog)
-            if re.search(r"\b(?:разница в цене|чем отличаются|зарядк\w*|проводн\w* сеть|одним кабелем|ethernet)\b", current)
-            and not new_route else None
-        )) is not None:
-            answer, products = comparison
-            if state.route != "comparison":
-                state.query = body.message
-            state.route = "comparison"
-            state.options = [item["sku"] for item in products]
-            detail, sources = comparison_details(products)
-            if detail:
-                answer += "\n\n" + detail
-            searched = True
             result = {"answer": answer, "provider": "catalog", "actions": []}
         elif len(codes) == 1 and not service_only and (
             scope is None or scope.model or state.route == "alternatives"
@@ -641,6 +669,10 @@ def create_app(db_path=None):
             candidates = [item for item in catalog.search(query, 3, scope=scope) if scope.matches(item)]
             searched = True
             answer, products, sources = scoped_answer(scope, candidates, body.message, query)
+            if len(products) > 1 and COMPARE_REQUEST.search(current):
+                answer, sources = compare_products(products, body.message)
+                state.route = "comparison"
+                state.options = [item["sku"] for item in products]
             if (scope.category in {"monitor", "laptop"} and not scope.model and len(products) > 1
                     and not re.search(r"\bсравн\w*\b", current) and not sources):
                 products = shortlist(catalog, scope, normalize_codes(query))
@@ -716,6 +748,8 @@ def create_app(db_path=None):
             result["answer"] = "Достигнут лимит обращений. Повторите попытку через минуту."
         elif operator_requested:
             result["answer"] = "Откройте форму «Позвать менеджера», чтобы отправить обращение."
+        if products:
+            state.options = list(dict.fromkeys(item["sku"] for item in products))
         if selection is None and products and (len(products) == 1 or (
             scope and scope.model and all(scope.matches(item) for item in products)
         )):

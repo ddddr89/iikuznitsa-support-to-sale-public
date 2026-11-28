@@ -56,8 +56,11 @@ def short_facts(item, expression=FEATURE_LABELS):
     return "; ".join(selected) or item["description"].strip()[:165]
 
 
-def named_product(catalog, model, scope=None):
+def named_product(catalog, model, scope=None, *, exact_phrase=False):
     found = catalog.search(model, 25)
+    if exact_phrase and "-" in model:
+        found = [*catalog.search_by_name(model), *found]
+        found = list({item["sku"]: item for item in found}.values())
     result = []
     for item in found:
         exact_name = re.search(rf"(?<![\w-]){re.escape(model)}(?![\w-])", normalize_codes(item["name"]))
@@ -121,19 +124,41 @@ def recommendation(items, quantity=None, *, alternatives=False):
     return "\n\n".join(lines)
 
 
+def comparison_codes(question, catalog):
+    """Распознаёт составные коды моделей и отделяет производителя от модели."""
+    text = normalize_codes(question).translate(str.maketrans("‑–—", "---"))
+    serials = re.search(r"\b(?:артикулы|sku)\s*[:№]?\s*(\d{4,12}(?:\s*(?:,|и|/|;|\s)\s*\d{4,12})+)", text)
+    if serials:
+        return list(dict.fromkeys(re.findall(r"\d+", serials[1])))
+    labels = list(dict.fromkeys([*model_codes(text), *re.findall(
+        r"\b[a-z]{1,8}-\d[a-z0-9]+(?:-[a-z0-9]+)*\b|\b[a-z]{1,8}-\d\b", text
+    )]))
+    result = []
+    for label in sorted(labels, key=text.index):
+        # Производитель вроде A4Tech тоже содержит цифру. Сверяем его с полем vendor.
+        if re.fullmatch(r"[a-z]+\d[a-z]+", label) and any(
+            normalize_codes(vendor["text"]) == label
+            for item in catalog.search(label, 6)
+            for vendor in json.loads(item.get("feed_fields") or "{}").get("fields", {}).get("vendor", [])
+        ):
+            continue
+        result.append(label)
+    return result
+
+
 def compare_named_products(catalog, labels):
-    """Для сравнения ищет ровно две названные позиции независимо от категории."""
+    """Ищет названные позиции независимо от категории."""
     items = []
     for code in labels:
-        candidates = named_product(catalog, code)
+        candidates = [item] if code.isdigit() and (item := catalog.get(code)) else named_product(catalog, code, exact_phrase=True)
         item = min(candidates, key=lambda row: (row["price_minor"] is None, row["price_minor"] or 0),
                    default=None)
         if item is None:
-            return "Одну из моделей не нашёл. Уточните её артикул, чтобы сравнить обе позиции.", []
+            return "Одну из моделей не нашёл. Уточните её артикул, чтобы сравнить позиции.", []
         items.append(item)
-    if items[0]["sku"] == items[1]["sku"]:
-        return "Оба обозначения ведут к одной позиции каталога.", []
-    return "\n\n".join(item_text(item) for item in items), items
+    if len({item["sku"] for item in items}) != len(items):
+        return "Некоторые обозначения ведут к одной позиции. Уточните модели для сравнения.", []
+    return "", items
 
 
 def alternative_scope(scope, category, budget, text):
