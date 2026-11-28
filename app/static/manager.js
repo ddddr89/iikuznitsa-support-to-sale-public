@@ -19,6 +19,13 @@ const knowledgeForm = byId("knowledge-form");
 const leadUpdateForm = byId("lead-update-form");
 const items = byId("quote-items");
 const add = byId("add-item");
+const replyButton = byId("send-manager-reply");
+const statusButton = byId("save-lead-status");
+const historyPane = byId("lead-history");
+let historyVersion = "";
+let pollingLead = false;
+let savingLead = false;
+let leadWriteVersion = 0;
 
 function clearQuote() {
   status("quote-status", "");
@@ -55,8 +62,43 @@ function addItem(sku = "") {
     else updateAddButton();
     clearQuote();
   });
-  item.append(skuLabel, quantityLabel, remove);
+  const preview = element("p", "", "meta quote-preview");
+  let product = null;
+  let searchTimer;
+  let searchVersion = 0;
+  function showProduct() {
+    if (!product) return;
+    const unit = product.price_minor;
+    const count = quantity.valueAsNumber;
+    preview.textContent = product.name + " · Артикул " + product.sku + (unit === null
+      ? " · Цена не указана"
+      : " · " + money(unit, product.currency) + " за шт." +
+        (quantity.validity.valid ? " · " + count + " шт. · Итого " + money(unit * count, product.currency) : ""));
+  }
+  function lookUpSku() {
+    clearTimeout(searchTimer);
+    const current = ++searchVersion;
+    const code = skuInput.value.trim();
+    product = null;
+    preview.textContent = code ? "Ищем товар…" : "";
+    if (!code) return;
+    searchTimer = setTimeout(async () => {
+      try {
+        const { items: matches } = await request("/products?q=" + encodeURIComponent(code));
+        if (current !== searchVersion || !item.isConnected) return;
+        product = matches.find((match) => match.sku.toLowerCase() === code.toLowerCase());
+        if (product) showProduct();
+        else preview.textContent = "Товар с таким артикулом не найден.";
+      } catch {
+        if (current === searchVersion && item.isConnected) preview.textContent = "Не удалось загрузить карточку товара.";
+      }
+    }, 250);
+  }
+  skuInput.addEventListener("input", lookUpSku);
+  quantity.addEventListener("input", showProduct);
+  item.append(skuLabel, quantityLabel, remove, preview);
   items.append(item);
+  lookUpSku();
   updateAddButton();
   return skuInput;
 }
@@ -219,7 +261,7 @@ quoteForm.addEventListener("submit", async (event) => {
   try {
     const result = await request("/manager/quotes", { token, body: { lead_id: currentSelection.id, items: rows } });
     if (selected !== currentSelection || currentSession !== session) return;
-    status("quote-status", "Документы № " + result.id + " · " + money(result.total_minor, result.currency));
+    status("quote-status", "Документы готовы к скачиванию · " + money(result.total_minor, result.currency));
     showSavedDocuments([result, ...savedDocuments.filter((document) => document.id !== result.id)]);
   } catch (error) {
     if (selected === currentSelection && currentSession === session) status("quote-status", error.message, true);
@@ -237,29 +279,35 @@ function showSavedDocuments(documents) {
   list.replaceChildren(...documents.map((document) => {
     const row = element("div", undefined, "document-row");
     row.append(element("span", money(document.total_minor, "RUB")));
-    const button = element("button", "Скачать документы", "secondary");
-    button.type = "button";
-    button.addEventListener("click", () => downloadDocuments(button, document.id));
-    row.append(button);
+    for (const [kind, label, filename] of [
+      ["quote.pdf", "Скачать КП", "Коммерческое предложение.pdf"],
+      ["invoice.pdf", "Скачать счёт", "Счёт.pdf"],
+      ["documents.zip", "Скачать всё", "Документы.zip"],
+    ]) {
+      const button = element("button", label, "secondary");
+      button.type = "button";
+      button.addEventListener("click", () => downloadDocuments(button, document.id, kind, filename));
+      row.append(button);
+    }
     return row;
   }));
 }
 
-async function downloadDocuments(button, id) {
+async function downloadDocuments(button, id, kind, filename) {
   const currentSelection = selected;
   const currentSession = session;
   if (!token || button.disabled) return;
 
   button.disabled = true;
-  status("download-status", "Загружаем документы…");
+  status("download-status", "Загружаем файл…");
   try {
-    const path = "/manager/quotes/" + encodeURIComponent(id) + "/documents.zip";
+    const path = "/manager/quotes/" + encodeURIComponent(id) + "/" + kind;
     const file = await request(path, { token, download: true });
     if (currentSession !== session || selected !== currentSelection) return;
     const url = URL.createObjectURL(file);
     const link = element("a");
     link.href = url;
-    link.download = "documents-" + id + ".zip";
+    link.download = filename;
     document.body.append(link);
     link.click();
     link.remove();
@@ -301,11 +349,35 @@ function updateClosureField() {
   const closing = byId("lead-state").value === "closed";
   const reason = byId("closure-reason");
   byId("closure-reason-field").hidden = !closing;
-  reason.required = closing && Boolean(selected?.requires_reply) && !byId("manager-reply").value.trim();
+  reason.setAttribute("aria-required", String(closing && Boolean(selected?.requires_reply)));
 }
 
 byId("lead-state").addEventListener("change", updateClosureField);
-byId("manager-reply").addEventListener("input", updateClosureField);
+function renderLeadHistory(detail, opening = false) {
+  const version = JSON.stringify(detail.history);
+  if (!opening && version === historyVersion) return;
+  const previousTop = historyPane.scrollTop;
+  const nearBottom = historyPane.scrollHeight - historyPane.clientHeight - previousTop < 32;
+  showHistory(historyPane, detail);
+  historyVersion = version;
+  historyPane.scrollTop = opening || nearBottom ? historyPane.scrollHeight : previousTop;
+}
+
+setInterval(async () => {
+  const lead = selected;
+  const currentSession = session;
+  if (!lead || !token || leadUpdateForm.hidden || pollingLead || savingLead || document.hidden) return;
+  pollingLead = true;
+  const version = leadWriteVersion;
+  try {
+    const detail = await request("/manager/leads/" + encodeURIComponent(lead.id), { token });
+    if (selected === lead && currentSession === session && version === leadWriteVersion) renderLeadHistory(detail);
+  } catch {
+    // Следующее обновление повторит запрос. Введённый ответ остаётся в форме.
+  } finally {
+    pollingLead = false;
+  }
+}, 4000);
 
 async function loadLeadDetail(lead) {
   const currentSession = session;
@@ -319,7 +391,7 @@ async function loadLeadDetail(lead) {
   try {
     const detail = await request("/manager/leads/" + encodeURIComponent(lead.id), { token });
     if (currentSession !== session || selected !== lead) return;
-    showHistory(byId("lead-history"), detail);
+    renderLeadHistory(detail, true);
     showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
     lead.requires_reply = detail.requires_reply;
@@ -331,36 +403,53 @@ async function loadLeadDetail(lead) {
   }
 }
 
-leadUpdateForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function saveLead(body, sentReply) {
   const lead = selected;
   const currentSession = session;
-  const button = leadUpdateForm.querySelector("button");
-  if (!lead || !token || button.disabled) return;
-  const answer = byId("manager-reply").value.trim();
-  const state = byId("lead-state").value;
-  const reason = state === "closed" ? byId("closure-reason").value.trim() : "";
-  button.disabled = true;
+  if (!lead || !token || savingLead) return;
+  savingLead = true;
+  leadWriteVersion++;
+  replyButton.disabled = statusButton.disabled = true;
   try {
-    const path = "/manager/leads/" + encodeURIComponent(lead.id);
-    const detail = await request(path, {
-      token, method: "PATCH", body: { status: state, ...(answer ? { answer } : {}),
-        ...(reason ? { closure_reason: reason } : {}) },
+    const detail = await request("/manager/leads/" + encodeURIComponent(lead.id), {
+      token, method: "PATCH", body,
     });
     if (currentSession !== session || selected !== lead) return;
-    showHistory(byId("lead-history"), detail);
+    renderLeadHistory(detail);
     showSavedDocuments(detail.documents);
     byId("lead-state").value = detail.status;
-    byId("manager-reply").value = "";
-    byId("closure-reason").value = "";
+    if (sentReply && byId("manager-reply").value.trim() === body.answer) byId("manager-reply").value = "";
+    if (!sentReply) byId("closure-reason").value = "";
     lead.requires_reply = detail.requires_reply;
     updateClosureField();
-    status("lead-update-status", "Изменения сохранены.");
+    status("lead-update-status", sentReply ? "Ответ отправлен." : "Статус сохранён.");
     const view = leadFilter.value;
     await loadQueue(view === queueView ? queuePage : 1, view, true);
   } catch (error) {
     if (currentSession === session && selected === lead) status("lead-update-status", error.message, true);
   } finally {
-    button.disabled = false;
+    savingLead = false;
+    replyButton.disabled = statusButton.disabled = false;
   }
+}
+
+leadUpdateForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const answer = byId("manager-reply").value.trim();
+  if (!answer) {
+    status("lead-update-status", "Введите ответ клиенту.", true);
+    return;
+  }
+  saveLead({ answer }, true);
+});
+
+statusButton.addEventListener("click", () => {
+  const state = byId("lead-state").value;
+  const reason = byId("closure-reason");
+  if (state === "closed" && selected?.requires_reply && !reason.value.trim()) {
+    status("lead-update-status", "Укажите причину закрытия обращения без ответа.", true);
+    reason.focus();
+    return;
+  }
+  saveLead({ status: state, ...(state === "closed" && reason.value.trim() ? { closure_reason: reason.value.trim() } : {}) }, false);
 });

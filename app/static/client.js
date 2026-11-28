@@ -227,15 +227,11 @@ function openHandoff() {
 
 byId("escalate").addEventListener("click", async () => {
   await restoredChat;
-  if (history.length) {
-    const form = byId("chat-form");
-    if (!form.querySelector("button").disabled) {
-      chatShortcut = "Позовите менеджера.";
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    }
-    return;
+  const form = byId("chat-form");
+  if (!form.querySelector("button").disabled) {
+    chatShortcut = "Позовите менеджера.";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   }
-  openContactForm();
 });
 
 function openContactForm() {

@@ -67,13 +67,14 @@
             <option value="answered">Ответ отправлен</option>
             <option value="closed">Закрыта</option>
           </select>
-          <label for="manager-reply">Ответ клиенту</label>
-          <textarea id="manager-reply" rows="3" maxlength="2000"></textarea>
           <div id="closure-reason-field" hidden>
             <label for="closure-reason">Причина закрытия для истории кабинета</label>
             <textarea id="closure-reason" rows="2" maxlength="2000"></textarea>
           </div>
-          <button>Сохранить изменения</button>
+          <button id="save-lead-status" type="button" class="secondary">Сохранить статус</button>
+          <label for="manager-reply">Ответ клиенту</label>
+          <textarea id="manager-reply" rows="3" maxlength="2000"></textarea>
+          <button id="send-manager-reply">Отправить ответ</button>
         </form>
         <p id="lead-update-status" class="status" role="status"></p>
       </section>
@@ -93,13 +94,13 @@
         <div id="saved-document-list"></div>
       </section>
       <form id="knowledge-form" hidden>
-        <h3>Подтверждённый ответ</h3>
-        <label for="knowledge-question">Общий вопрос без данных клиента</label>
+        <h3>Добавить в базу знаний</h3>
+        <label for="knowledge-question">Вопрос клиента</label>
         <input id="knowledge-question" maxlength="2000" required>
         <label for="knowledge-answer">Проверенный ответ</label>
         <textarea id="knowledge-answer" maxlength="2000" required></textarea>
         <label><input id="knowledge-anonymized" type="checkbox" required> Проверено, персональных данных нет</label>
-        <button>Сохранить в базе знаний</button>
+        <button>Сохранить в базу знаний</button>
         <p id="knowledge-status" class="status" role="status"></p>
       </form>
     </section>

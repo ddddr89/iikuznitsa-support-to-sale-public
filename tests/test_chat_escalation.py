@@ -73,3 +73,37 @@ class ProviderOutageTests(TestCase):
                 submit(data, session)
             self.assertEqual(throttled.exception.status_code, 429)
             self.assertEqual(len(commercial.list_leads()), 5)
+
+    def test_direct_requests_bypass_the_consultant_and_reuse_the_lead(self):
+        phrases = (
+            "Здравствуйте. Я хочу обсудить корпоративную закупку непосредственно с менеджером, без AI-консультации",
+            "Соедините с человеком",
+            "Хочу обсудить закупку с сотрудником",
+            "Не хочу общаться с ботом",
+            "Менеджеру",
+            "Позовите специалиста",
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "test.sqlite3"
+            catalog, commercial = Catalog(path), Commercial(path)
+            catalog.init()
+            commercial.init()
+            Knowledge(path).init()
+            with patch.dict("os.environ", {"APP_KNOWLEDGE_DB": str(path)}):
+                app = create_app(path)
+            chat = next(route.endpoint for route in app.routes if route.path == "/api/v1/chat")
+            for index, phrase in enumerate(phrases):
+                with self.subTest(phrase=phrase):
+                    token = chr(ord("A") + index) * 43
+                    owner = sha256(token.encode()).hexdigest()
+                    commercial.create_session(owner, 600)
+                    request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+                    with patch("app.main.reply", side_effect=AssertionError("Модель вызвана")):
+                        first = chat(Chat(message=phrase), request)
+                        repeat = chat(Chat(message="Позовите менеджера."), request)
+                    self.assertEqual(first["actions"], [{"type": "lead_escalation", "status": "done"}])
+                    self.assertEqual(first["products"], [])
+                    self.assertEqual(first["escalation"], repeat["escalation"])
+                    detail = commercial.lead_detail(first["escalation"]["id"], owner)
+                    self.assertEqual(detail["message"], phrase)
+            self.assertEqual(len(commercial.list_leads()), len(phrases))

@@ -60,6 +60,12 @@ OPERATOR_REQUEST = re.compile(
     r"(?<!не )\b(?:нужен|нужна|хочу)\s+"
     r"(?:(?:жив\w*|реальн\w*|помощь|консультаци\w*)\s+)?"
     r"(?:оператор\w*|менеджер\w*|человек(?:а)?)\b|"
+    r"(?<!не )\b(?:обсуди\w*|пообща\w*|связаться|выйти на связь)\b"
+    r"[^.!?]{0,90}\bс\s+(?:(?:жив\w*|реальн\w*|вашим)\s+)?"
+    r"(?:оператором|менеджером|человеком|специалистом|сотрудником)\b|"
+    r"\bбез\s+(?:(?:ai|ии)[- ]?консультаци\w*|бота|чат[- ]?бота)\b|"
+    r"\bне\s+хочу\s+(?:общаться|разговаривать|говорить|переписываться)\s+с\s+"
+    r"(?:ботом|чат[- ]?ботом|ии|ai)\b|"
     r"^\s*(?:оператор|менеджер|специалист)(?:а|у)?[.!?\s]*$",
     re.IGNORECASE,
 )
@@ -224,6 +230,7 @@ def create_app(db_path=None):
     require_lead_session = os.getenv("APP_REQUIRE_LEAD_SESSION", "0") == "1"
     lead_attempts = deque()
     lead_lock = Lock()
+    direct_handoff_lock = Lock()
 
     def reserve_lead_slot(owner):
         """Ограничивает попытки записи на публичном стенде одним общим окном."""
@@ -303,11 +310,60 @@ def create_app(db_path=None):
                     raise HTTPException(429, "Лимит запросов к помощнику", {"Retry-After": "60"})
                 chat_times.append((now, owner))
         trusted_history = commercial.chat_history(owner, include_context=True) if owner else []
+        current = normalize_codes(body.message).strip()
+        state = Dialogue.load(trusted_history)
+        explicit_operator = bool(OPERATOR_REQUEST.search(body.message))
+        # Условная передача («если не найдёте») оставляет поиск первым шагом.
+        # Вежливое «если можно» сохраняет прямую просьбу.
+        conditional_operator = bool(re.search(r"\bесли\b(?!\s+(?:можно|вам удобно)\b)", current))
+        if explicit_operator and not conditional_operator:
+            with direct_handoff_lock:
+                # Явный запрос на человека обрабатывается до поиска и генерации ответа.
+                if owner:
+                    state = Dialogue.load(commercial.chat_history(owner, include_context=True))
+                order = state.facts.get("order_status")
+                pending = state.handoff or {}
+                lead_id = order.get("lead") if order else pending.get("lead") or state.lead
+                lead = None
+                if owner and lead_id:
+                    try:
+                        lead = commercial.lead_detail(lead_id, owner)
+                    except KeyError:
+                        pass
+                if not owner:
+                    answer = "Откройте чат и выберите «Позвать менеджера»."
+                elif not lead and not reserve_lead_slot(owner):
+                    answer = "Достигнут лимит обращений. Повторите попытку через минуту."
+                else:
+                    if order:
+                        subject = f"{ORDER_STATUS_SUBJECT}. {order['question']}"
+                        if order.get("number_unknown"):
+                            subject += " Номер заказа неизвестен."
+                        sku = None
+                    else:
+                        subject = pending.get("subject") or state.query or body.message
+                        sku = pending.get("sku") or state.sku
+                    already_sent = lead is not None
+                    lead = lead or commercial.create_lead(
+                        SYSTEM_CONTACT, subject, sku=sku, escalation=True, owner=owner,
+                    )
+                    commercial.append_customer_detail(owner, lead["id"], body.message)
+                    answer = "Конечно. Передал ваше обращение менеджеру. Он ответит вам здесь, в чате"
+                    if order:
+                        order["lead"] = lead["id"]
+                        answer = ("Этот вопрос уже передан менеджеру." if already_sent else
+                                  "Передал ваш вопрос менеджеру. Он поможет уточнить статус заказа.")
+                    state.lead, state.handoff = lead["id"], None
+                if owner:
+                    commercial.record_turn(owner, body.message, answer, dialogue=asdict(state))
+                result = {"answer": answer, "provider": "catalog", "products": [], "sources": [], "actions": []}
+                if lead:
+                    result["escalation"] = {"status": lead["status"], "id": lead["id"]}
+                    result["actions"].append({"type": "lead_escalation", "status": "done"})
+                return result
         incoming_history = trusted_history if owner else [turn.model_dump() for turn in body.history]
         active = active_turns(body.message, incoming_history)
         earlier = "\n".join(turn["question"] for turn in reversed(active))
-        current = normalize_codes(body.message).strip()
-        state = Dialogue.load(trusted_history)
         new_route = route_for(body.message)
         port_request = PORT_COUNT.search(current)
         current_category = category_for(current)
@@ -334,7 +390,6 @@ def create_app(db_path=None):
             new_route = "network"
         service_only = new_route == "service"
         cancel = bool(REJECTION.search(current) or STOP.search(current) and "на этом все" in current)
-        explicit_operator = bool(OPERATOR_REQUEST.search(body.message))
         consent = bool(state.handoff and re.fullmatch(
             r"(?:да|согласен|согласна|давайте|хорошо|передайте|да,? передайте)[.! ]*", current
         ))
@@ -453,7 +508,7 @@ def create_app(db_path=None):
             latest_price_question or quantity_revision
         ):
             count = quantity
-        conditional_handoff = operator_requested and bool(re.search(r"\bесли\b", current))
+        conditional_handoff = operator_requested and conditional_operator
         license_result = (license_answer(body.message, [turn["question"] for turn in incoming_history], catalog, state=state)
                           if not operator_requested or conditional_handoff else None)
         if conditional_handoff and license_result and license_result[1]:

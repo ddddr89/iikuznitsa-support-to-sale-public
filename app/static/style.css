@@ -114,6 +114,7 @@ textarea + button, .actions, #download { margin-top: .85rem; }
 .catalog-panel #search-products { margin-top: .8rem; }
 .quote-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.5rem, 7rem) auto; gap: .5rem; align-items: end; }
 .quote-item label { margin: 0; }
+.quote-preview { grid-column: 1 / -1; margin: 0; }
 .conversation { position: relative; display: grid; gap: .8rem; margin-bottom: 1rem; max-height: 56vh; overflow: auto; scrollbar-color: var(--gray) #f7f7f8; padding: .15rem; }
 .message { min-width: 0; padding: .9rem 1rem; border: 1px solid var(--edge); border-radius: .2rem .85rem .85rem .85rem; background: #f8f8f9; }
 .message.customer { width: fit-content; max-width: 90%; justify-self: end; border-color: #f2ccd5; border-radius: .85rem .2rem .85rem .85rem; background: var(--accent-light); }
