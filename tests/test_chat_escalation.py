@@ -107,3 +107,30 @@ class ProviderOutageTests(TestCase):
                     detail = commercial.lead_detail(first["escalation"]["id"], owner)
                     self.assertEqual(detail["message"], phrase)
             self.assertEqual(len(commercial.list_leads()), len(phrases))
+
+    def test_direct_request_in_same_session_creates_open_lead_after_close(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "test.sqlite3"
+            commercial = Commercial(path)
+            commercial.init()
+            Knowledge(path).init()
+            with patch.dict("os.environ", {"APP_KNOWLEDGE_DB": str(path)}):
+                app = create_app(path)
+            chat = next(route.endpoint for route in app.routes if route.path == "/api/v1/chat")
+            for key, initial in (("X", None), ("Y", "Как проверить статус ранее оформленного заказа?")):
+                with self.subTest(initial=initial):
+                    token = key * 43
+                    owner = sha256(token.encode()).hexdigest()
+                    commercial.create_session(owner, 600)
+                    request = SimpleNamespace(cookies={SESSION_COOKIE: token})
+                    if initial:
+                        chat(Chat(message=initial), request)
+                    shortcut = Chat(message="Позовите менеджера.")
+                    original = chat(shortcut, request)["escalation"]
+                    self.assertEqual(chat(shortcut, request)["escalation"], original)
+                    commercial.update_lead(original["id"], status="closed", closure_reason="Проверка")
+                    reopened = chat(shortcut, request)["escalation"]
+                    self.assertNotEqual(reopened["id"], original["id"])
+                    self.assertEqual(reopened["status"], "escalated")
+                    self.assertEqual(chat(shortcut, request)["escalation"], reopened)
+                    self.assertEqual(commercial.lead_detail(original["id"], owner)["status"], "closed")

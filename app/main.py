@@ -327,7 +327,9 @@ def create_app(db_path=None):
                 lead = None
                 if owner and lead_id:
                     try:
-                        lead = commercial.lead_detail(lead_id, owner)
+                        previous = commercial.lead_detail(lead_id, owner)
+                        if previous["status"] != "closed":
+                            lead = previous
                     except KeyError:
                         pass
                 if not owner:
